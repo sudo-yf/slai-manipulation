@@ -1,0 +1,9 @@
+platform: wujihand_ur5
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+training:
+  seed: 42
+  output_dir: outputs
+inference:
+  robot: ur5
