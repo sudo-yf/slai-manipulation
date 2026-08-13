@@ -1,0 +1,41 @@
+schema_version: 1
+setup_id: default
+configured: false
+
+# Device identities belong in a local, git-ignored override file or environment.
+ur5:
+  enabled: false
+  host: null
+
+wujihand:
+  enabled: false
+  usb_serial: null
+  product_serial: null
+
+spacemouse:
+  enabled: false
+
+cameras:
+  enabled: false
+  devices:
+    - role: primary
+      serial: null
+    - role: secondary
+      serial: null
+    - role: wrist
+      serial: null
+
+stereo_camera:
+  enabled: false
+  left_serial: null
+  right_serial: null
+
+iphone:
+  enabled: false
+  source: pose_hub
+  local_host: 127.0.0.1
+  pose_port: 5005
+  robot_state_port: 5006
+
+wrist_sensor:
+  enabled: false

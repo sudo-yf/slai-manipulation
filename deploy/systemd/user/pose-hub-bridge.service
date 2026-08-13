@@ -1,0 +1,18 @@
+[Unit]
+Description=SLaI iPhone Pose Hub local bridge
+After=network-online.target pose-hub.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/shiyi/workspace/active/slai-manipulation
+EnvironmentFile=%h/.config/pose-hub/pose-hub-bridge.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=%h/shiyi/workspace/active/slai-manipulation/src
+ExecStart=%h/shiyi/workspace/active/slai-manipulation/.venv/bin/python -m slai_mi.apps.pose_hub_bridge --run --url http://100.73.226.20:8706 --session ${POSE_HUB_SESSION_ID} --port 5005 --robot-state-port 5006
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

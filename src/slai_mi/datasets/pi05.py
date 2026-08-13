@@ -1,0 +1,169 @@
+"""Convert canonical LeRobot v3 demonstrations into the PI0.5 v2.1 view."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+TARGET_IMAGE_SHAPE = (224, 224, 3)
+SUPPORTED_CONTRACTS = {
+    "robot_teleoperation.ur5_wuji.pi05_cartesian.v1",
+    "robot_teleoperation.ur5_wuji.three_rgb_cartesian.v3",
+}
+REQUIRED_FEATURE_SHAPES = {
+    "observation.images.primary_rgb": [480, 640, 3],
+    "observation.images.secondary_rgb": [480, 640, 3],
+    "observation.state": [26],
+    "observation.tcp_pose": [6],
+    "action": [26],
+}
+
+
+def discover_source_roots(source: Path) -> tuple[Path, ...]:
+    """Return one dataset root or all direct descendants carrying v3 metadata."""
+    source = source.resolve()
+    if (source / "meta" / "info.json").is_file():
+        return (source,)
+    roots = sorted(path.parent.parent for path in source.glob("*/meta/info.json"))
+    if not roots:
+        raise ValueError(f"no LeRobot dataset roots found under {source}")
+    return tuple(roots)
+
+
+def validate_pi05_source(root: Path) -> dict[str, object]:
+    """Validate the old two-camera or current three-camera PI0.5 source contract."""
+    info_path = root / "meta" / "info.json"
+    contract_path = root / "meta" / "robot_teleoperation_contract.json"
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    if info.get("codebase_version") != "v3.0" or info.get("fps") != 30:
+        raise ValueError(f"PI0.5 source must be LeRobot v3 at 30 Hz: {root}")
+    if contract.get("contract_id") not in SUPPORTED_CONTRACTS:
+        raise ValueError(f"unsupported PI0.5 source contract: {contract.get('contract_id')}")
+    features = info.get("features")
+    if not isinstance(features, dict):
+        raise TypeError(f"dataset features are missing: {root}")
+    for key, shape in REQUIRED_FEATURE_SHAPES.items():
+        if key not in features or features[key].get("shape") != shape:
+            raise ValueError(f"{root}:{key} must have shape {shape}")
+    episodes, frames = int(info.get("total_episodes", 0)), int(info.get("total_frames", 0))
+    if episodes <= 0 or frames <= 0:
+        raise ValueError(f"PI0.5 source must contain committed frames: {root}")
+    return {
+        "root": str(root),
+        "contract_id": contract["contract_id"],
+        "episodes": episodes,
+        "frames": frames,
+    }
+
+
+def policy_rgb(value: object) -> np.ndarray:
+    image = np.asarray(value)
+    if image.ndim == 3 and image.shape[0] == 3:
+        image = np.moveaxis(image, 0, -1)
+    if np.issubdtype(image.dtype, np.floating):
+        image = np.clip(image * 255.0, 0, 255).astype(np.uint8)
+    if image.ndim != 3 or image.shape[-1] != 3:
+        raise ValueError(f"expected HxWx3 RGB, got {image.shape}")
+    if image.shape != TARGET_IMAGE_SHAPE:
+        try:
+            from PIL import Image
+        except ImportError as exc:
+            raise RuntimeError("PI0.5 image conversion requires Pillow") from exc
+        image = np.asarray(
+            Image.fromarray(image).resize(TARGET_IMAGE_SHAPE[:2][::-1], Image.Resampling.LANCZOS)
+        )
+    return np.ascontiguousarray(image, dtype=np.uint8)
+
+
+def stage_episode(dataset: Any, start: int, end: int, stride: int, path: Path) -> int:
+    if stride < 1:
+        raise ValueError("PI0.5 sampling stride must be positive")
+    primary, secondary, states, actions = [], [], [], []
+    task = ""
+    for index in range(start, end, stride):
+        item = dataset[index]
+        joint_state = np.asarray(item["observation.state"], dtype=np.float32)
+        tcp_pose = np.asarray(item["observation.tcp_pose"], dtype=np.float32)
+        action = np.asarray(item["action"], dtype=np.float32)
+        if joint_state.shape != (26,) or tcp_pose.shape != (6,) or action.shape != (26,):
+            raise ValueError("PI0.5 requires state[26], tcp_pose[6], and action[26]")
+        primary.append(policy_rgb(item["observation.images.primary_rgb"]))
+        secondary.append(policy_rgb(item["observation.images.secondary_rgb"]))
+        states.append(np.concatenate((tcp_pose, joint_state), dtype=np.float32))
+        actions.append(np.ascontiguousarray(action))
+        task = str(item["task"])
+    if not states:
+        raise ValueError("episode has no frames after PI0.5 sampling")
+    np.savez(
+        path,
+        primary_rgb=np.stack(primary),
+        secondary_rgb=np.stack(secondary),
+        state=np.stack(states),
+        actions=np.stack(actions),
+        task=np.asarray(task),
+    )
+    return len(states)
+
+
+def convert_v3_to_v21(
+    source: Path,
+    target: Path,
+    *,
+    repo_id: str,
+    source_fps: int,
+    policy_fps: int,
+    v21_python: Path,
+) -> Path:
+    """Validate v3, stage downsampled episodes, then write with LeRobot v2.1."""
+    from lerobot.datasets import LeRobotDataset
+
+    source, target = source.resolve(), target.resolve()
+    # Resolving a venv Python symlink bypasses that venv's site-packages.
+    v21_python = Path(os.path.abspath(v21_python.expanduser()))
+    if target.exists():
+        raise FileExistsError(f"refusing to overwrite PI0.5 dataset: {target}")
+    if not v21_python.is_file():
+        raise FileNotFoundError(f"LeRobot v2.1 Python is missing: {v21_python}")
+    if source_fps <= 0 or policy_fps <= 0 or source_fps % policy_fps:
+        raise ValueError("source FPS must be a positive multiple of policy FPS")
+    roots = discover_source_roots(source)
+    writer = Path(__file__).with_name("pi05_writer.py")
+    with tempfile.TemporaryDirectory(prefix="slai_pi05_stage_") as temporary:
+        staging = Path(temporary)
+        output_episode = 0
+        for source_index, root in enumerate(roots):
+            validate_pi05_source(root)
+            dataset = LeRobotDataset(
+                f"local/pi05-v3-source-{source_index}",
+                root=root,
+                return_uint8=True,
+                video_backend="pyav",
+            )
+            if int(dataset.fps) != source_fps:
+                raise ValueError(
+                    f"configured source FPS {source_fps} differs from {root}: {dataset.fps}"
+                )
+            required = {"observation.tcp_pose", "observation.state", "action"}
+            if missing := sorted(required - set(dataset.features)):
+                raise ValueError(f"{root} is missing features: " + ", ".join(missing))
+            for episode in dataset.meta.episodes or []:
+                stage_episode(
+                    dataset,
+                    int(episode["dataset_from_index"]),
+                    int(episode["dataset_to_index"]),
+                    source_fps // policy_fps,
+                    staging / f"episode-{output_episode:06d}.npz",
+                )
+                output_episode += 1
+        subprocess.run(
+            [str(v21_python), str(writer), str(staging), str(target), "--repo-id", repo_id],
+            check=True,
+        )
+    return target

@@ -1,0 +1,59 @@
+schema_version: 1
+format: lerobot_v3
+root: data/lerobot
+fps: 30
+units:
+  joint_position: rad
+  tcp_translation: m
+  tcp_rotation: rotation_vector_rad
+
+joint_groups:
+  ur5:
+    dimension: 6
+    joint_names:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+  wrist:
+    dimension: 2
+    # Confirm these names against the production wrist/URDF before enabling 28-DoF data.
+    joint_names: [wrist_pitch_joint, wrist_yaw_joint]
+  wujihand:
+    dimension: 20
+    joint_names:
+      - right_finger1_joint1
+      - right_finger1_joint2
+      - right_finger1_joint3
+      - right_finger1_joint4
+      - right_finger2_joint1
+      - right_finger2_joint2
+      - right_finger2_joint3
+      - right_finger2_joint4
+      - right_finger3_joint1
+      - right_finger3_joint2
+      - right_finger3_joint3
+      - right_finger3_joint4
+      - right_finger4_joint1
+      - right_finger4_joint2
+      - right_finger4_joint3
+      - right_finger4_joint4
+      - right_finger5_joint1
+      - right_finger5_joint2
+      - right_finger5_joint3
+      - right_finger5_joint4
+
+schemas:
+  real_v1:
+    dimension: 26
+    joint_groups: [ur5, wujihand]
+    note: Legacy/current real recordings do not contain the two wrist joints.
+  simulation_v1:
+    dimension: 28
+    joint_groups: [ur5, wrist, wujihand]
+    note: Simulation articulation includes the two wrist joints.
+
+# Conversion between 26 and 28 dimensions must be explicit; never silently pad values.
+cross_schema_conversion: disabled

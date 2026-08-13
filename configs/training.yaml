@@ -1,0 +1,12 @@
+schema_version: 1
+
+# Keep null until a training framework adapter is installed. Backends use module:factory.
+backend: null
+dataset:
+  root: data/lerobot
+policy:
+  action_horizon: 50
+  action_keys: [actions]
+strict_horizon:
+  # Enable only for an OpenPI backend; importing OpenPI stays lazy.
+  install_openpi_filter: false

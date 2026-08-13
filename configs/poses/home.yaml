@@ -1,0 +1,39 @@
+schema_version: 1
+name: home
+kind: device_home
+configured: false
+units: rad
+schema_ref: ../dataset.yaml#schemas.simulation_v1
+joint_names:
+  - shoulder_pan_joint
+  - shoulder_lift_joint
+  - elbow_joint
+  - wrist_1_joint
+  - wrist_2_joint
+  - wrist_3_joint
+  - wrist_pitch_joint
+  - wrist_yaw_joint
+  - right_finger1_joint1
+  - right_finger1_joint2
+  - right_finger1_joint3
+  - right_finger1_joint4
+  - right_finger2_joint1
+  - right_finger2_joint2
+  - right_finger2_joint3
+  - right_finger2_joint4
+  - right_finger3_joint1
+  - right_finger3_joint2
+  - right_finger3_joint3
+  - right_finger3_joint4
+  - right_finger4_joint1
+  - right_finger4_joint2
+  - right_finger4_joint3
+  - right_finger4_joint4
+  - right_finger5_joint1
+  - right_finger5_joint2
+  - right_finger5_joint3
+  - right_finger5_joint4
+joint_positions: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]
+provenance:
+  source: not_recorded
+  note: Device-level 28-DoF home must be commissioned and safety-reviewed.

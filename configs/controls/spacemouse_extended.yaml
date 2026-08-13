@@ -1,0 +1,7 @@
+schema_version: 1
+profile: spacemouse_extended
+extends: spacemouse_standard.yaml
+bindings:
+  roll_cw: auxiliary_hand_grasp
+  t: auxiliary_hand_open
+  rotation_lock: finalize_dataset

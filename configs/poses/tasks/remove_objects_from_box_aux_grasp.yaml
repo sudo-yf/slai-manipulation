@@ -1,0 +1,12 @@
+schema_version: 1
+name: remove_objects_from_box_aux_grasp
+kind: hand_preset
+configured: false
+units: rad
+joint_group: wujihand
+joint_names: [right_finger1_joint1, right_finger1_joint2, right_finger1_joint3, right_finger1_joint4, right_finger2_joint1, right_finger2_joint2, right_finger2_joint3, right_finger2_joint4, right_finger3_joint1, right_finger3_joint2, right_finger3_joint3, right_finger3_joint4, right_finger4_joint1, right_finger4_joint2, right_finger4_joint3, right_finger4_joint4, right_finger5_joint1, right_finger5_joint2, right_finger5_joint3, right_finger5_joint4]
+joint_positions: [1.0878466693896982, 0.831401109111924, 1.384327873651386, 0.34556149727003477, 0.15209494654441158, -0.32221313746054436, -0.0019001199256494382, 0.0006766054636484474, 0.16421498876989113, -0.14285826904113172, -0.0010163125968294215, 0.0009550280326242239, 0.14272323585068014, 0.0029978117294302284, 0.0043580095534769565, 0.007452449947923936, 0.20782616838802345, 0.21270122000433273, 0.0008546689265036048, -0.0003910789644764416]
+provenance:
+  source: legacy:Robot_Teleoperation/record/wuji_hand_retargeting/poses/wuji_hand1_pose_20260729T094326_418596Z.yaml
+  record_type: measured_actual_joint_positions
+  safety_note: Historical measurement; verify before enabling motion.

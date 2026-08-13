@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>iPhone raw 6DoF verifier</title>
+    <style>
+      :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f8; color: #20252a; }
+      * { box-sizing: border-box; }
+      body { margin: 0; overflow: hidden; background: #f6f7f8; }
+      canvas { display: block; }
+      #viewport { position: fixed; inset: 0 29% 0 0; min-width: 0; }
+      #labels { position: fixed; inset: 0 29% 0 0; pointer-events: none; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #4b5560; }
+      .axis-label { position: absolute; white-space: nowrap; text-shadow: 0 1px 2px #f6f7f8; }
+      #panel { position: fixed; inset: 0 0 0 auto; width: 29%; min-width: 300px; padding: 38px 28px; border-left: 1px solid #d2d7dc; background: #fafbfc; }
+      #status { min-height: 18px; font: 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #9a6700; white-space: pre-wrap; }
+      #values { margin: 26px 0 0; font: 11px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #20252a; white-space: pre-wrap; }
+      #result { margin: 29px 0 0; font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #a13d2d; white-space: pre-wrap; }
+      #help { position: absolute; inset: auto 28px 38px; font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #3f4851; white-space: pre-wrap; }
+      #legend { position: fixed; inset: 22px auto auto 30px; display: grid; gap: 5px; font-size: 11px; color: #303840; pointer-events: none; }
+      #legend[hidden] { display: none; }
+      .legend-row { display: flex; gap: 6px; align-items: center; }
+      .swatch { width: 13px; height: 9px; border: 1px solid #68727c; }
+      #keys { position: fixed; inset: auto auto 18px 24px; display: flex; gap: 5px; opacity: .72; }
+      #keys button { width: 28px; height: 28px; padding: 0; border: 1px solid #b7c0c8; border-radius: 4px; background: #fff; color: #3f4851; font: 600 12px ui-monospace, monospace; cursor: pointer; }
+      #keys button:hover { background: #edf1f4; }
+      #calibration { position: fixed; inset: 0 29% 0 0; display: grid; place-items: center; padding: 22px; background: rgba(246,247,248,.78); backdrop-filter: blur(3px); z-index: 4; }
+      #calibration[hidden] { display: none; }
+      .calibration-box { width: min(430px, 100%); padding: 24px; border: 1px solid #b9c2ca; border-radius: 6px; background: #fff; box-shadow: 0 12px 30px rgba(28,36,43,.14); }
+      #calibration-step { margin: 0 0 8px; font: 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #65717c; text-transform: uppercase; }
+      #calibration-title { margin: 0; font-size: 17px; letter-spacing: 0; }
+      #calibration-instruction { min-height: 46px; margin: 14px 0; font-size: 13px; line-height: 1.55; color: #3f4851; }
+      #calibration-reading { min-height: 17px; margin: 9px 0 16px; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #168aad; }
+      .progress-track { height: 6px; overflow: hidden; border-radius: 3px; background: #e3e7ea; }
+      #calibration-progress { width: 0; height: 100%; background: #168aad; transition: width .12s linear; }
+      #calibration-action { min-height: 34px; padding: 0 14px; border: 1px solid #59636e; border-radius: 4px; background: #59636e; color: #fff; font-size: 13px; cursor: pointer; }
+      #calibration-action[hidden] { display: none; }
+      #mode-switch { position: fixed; top: 18px; right: calc(29% + 18px); display: grid; grid-template-columns: 1fr 1fr; padding: 2px; border: 1px solid #b7c0c8; border-radius: 5px; background: rgba(255,255,255,.92); z-index: 3; }
+      #mode-switch button { min-width: 60px; height: 28px; padding: 0 10px; border: 0; border-radius: 3px; background: transparent; color: #53616c; font-size: 12px; cursor: pointer; }
+      #mode-switch button.active { background: #59636e; color: #fff; }
+      @media (max-width: 760px) {
+        #viewport, #labels { inset: 0 0 42% 0; }
+        #panel { inset: auto 0 0; width: 100%; min-width: 0; height: 42%; padding: 18px 22px; border-left: 0; border-top: 1px solid #d2d7dc; overflow: auto; }
+        #values { margin-top: 13px; font-size: 10px; }
+        #result { position: static; width: calc(100% - 108px); margin: 12px 0 0; font-size: 9px; }
+        #keys { inset: auto 14px 14px auto; }
+        #help { display: none; }
+        #legend { top: 16px; left: 18px; font-size: 10px; }
+        #calibration { inset: 0 0 42%; padding: 16px; }
+        .calibration-box { padding: 18px; }
+        #mode-switch { top: 12px; right: 12px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="viewport"></div>
+    <div id="labels"><span class="axis-label" id="x-label">+X  operator right (m)</span><span class="axis-label" id="y-label">+Y  toward monitor (m)</span><span class="axis-label" id="z-label">+Z  above table (m)</span></div>
+    <div id="legend"><div class="legend-row"><span class="swatch" style="background:#59636e"></span>raw relative iPhone pose</div><div class="legend-row"><span class="swatch" style="background:#fafbfc"></span>reset reference</div></div>
+    <div id="mode-switch" role="group" aria-label="Visualization mode"><button id="phone-mode" class="active" type="button">手机</button><button id="robot-mode" type="button">机械臂</button></div>
+    <aside id="panel"><div id="status">Searching for an iPhone...</div><pre id="values">Waiting for the first pose frame...</pre><pre id="result">Complete coordinate setup before motion checks.</pre><pre id="help">C           calibrate phone axes
+A           calibrate robot axes
+SPACE / R   reset zero
+S           5 s still test
+Q / ESC     quit
+
+One Euro adaptive filter
+Scale: 1:1 metric
+UR5: disconnected</pre></aside>
+    <div id="keys"><button id="calibrate" title="Calibrate phone coordinates (C)" aria-label="Calibrate phone coordinates">C</button><button id="robot-calibrate" title="Calibrate robot coordinates (A)" aria-label="Calibrate robot coordinates">A</button><button id="reset" title="Reset zero (R)" aria-label="Reset zero">R</button><button id="still" title="Start still test (S)" aria-label="Start still test">S</button></div>
+    <section id="calibration" aria-live="polite">
+      <div class="calibration-box" role="dialog" aria-labelledby="calibration-title">
+        <div id="calibration-step">Coordinate setup</div>
+        <h1 id="calibration-title">绑定操作坐标系</h1>
+        <p id="calibration-instruction">将用两次直线移动识别你的“向前”和“向右”，同时校准位移与旋转方向。</p>
+        <div class="progress-track"><div id="calibration-progress"></div></div>
+        <div id="calibration-reading">等待实时位姿...</div>
+        <button id="calibration-action" type="button">开始校准</button>
+      </div>
+    </section>
+    <script type="importmap">
+      { "imports": { "three": "https://unpkg.com/three@0.169.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/", "three/examples/jsm/": "https://unpkg.com/three@0.169.0/examples/jsm/" } }
+    </script>
+    <script type="module">
+      import * as THREE from "three";
+      import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+      import { buildOperatorBasis } from "/assets/pose-calibration.mjs";
+      import { OneEuroQuaternion, OneEuroVector3 } from "/assets/pose-filter.mjs";
+      import URDFLoader from "https://unpkg.com/urdf-loader@0.13.1/src/URDFLoader.js";
+
+      const RANGE = 0.35, ROBOT_RANGE = 1.0, TRAIL_SAMPLES = 300, STILL_SECONDS = 5;
+      const IPHONE = { x: .0715, y: .1467, z: .00765 };
+      const sessionId = location.pathname.split("/").pop();
+      const viewerToken = location.hash.slice(1);
+      const viewport = document.querySelector("#viewport"), status = document.querySelector("#status");
+      const values = document.querySelector("#values"), result = document.querySelector("#result");
+      const axisLabels = [document.querySelector("#x-label"), document.querySelector("#y-label"), document.querySelector("#z-label")];
+      const calibrationOverlay = document.querySelector("#calibration"), calibrationStep = document.querySelector("#calibration-step");
+      const calibrationTitle = document.querySelector("#calibration-title"), calibrationInstruction = document.querySelector("#calibration-instruction");
+      const calibrationProgress = document.querySelector("#calibration-progress"), calibrationReading = document.querySelector("#calibration-reading"), calibrationAction = document.querySelector("#calibration-action");
+      const legend = document.querySelector("#legend"), modeSwitch = document.querySelector("#mode-switch");
+      const phoneModeButton = document.querySelector("#phone-mode"), robotModeButton = document.querySelector("#robot-mode");
+      const scene = new THREE.Scene(); scene.background = new THREE.Color(0xf6f7f8);
+      const camera = new THREE.PerspectiveCamera(36, 1, .01, 10); camera.up.set(0, 0, 1); camera.position.set(0, -.93, .54); camera.lookAt(0, 0, 0);
+      const renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); viewport.append(renderer.domElement);
+      const controls = new OrbitControls(camera, renderer.domElement); controls.target.set(0, 0, 0); controls.enableDamping = true; controls.dampingFactor = .09; controls.minDistance = .28; controls.maxDistance = 1.5;
+      scene.add(new THREE.HemisphereLight(0xffffff, 0xb9c3cb, 2.3));
+      scene.add(new THREE.DirectionalLight(0xffffff, 1.1).translateZ(.5));
+      const phoneVisual = new THREE.Group(), robotVisual = new THREE.Group(); robotVisual.visible = false; scene.add(phoneVisual, robotVisual);
+
+      function makeGrid(viewRange, divisions) {
+        const group = new THREE.Group();
+        const points = [];
+        for (let i = 0; i <= divisions; i++) {
+          const v = -viewRange + (2 * viewRange * i / divisions);
+          points.push(-viewRange, v, 0, viewRange, v, 0, v, -viewRange, 0, v, viewRange, 0);
+        }
+        const geometry = new THREE.BufferGeometry(); geometry.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
+        group.add(new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: 0xaeb7bf, transparent: true, opacity: .43 })));
+        const axes = new THREE.Group();
+        [[new THREE.Vector3(-viewRange,0,0),new THREE.Vector3(viewRange,0,0),0x53616c],[new THREE.Vector3(0,-viewRange,0),new THREE.Vector3(0,viewRange,0),0x53616c],[new THREE.Vector3(0,0,-viewRange),new THREE.Vector3(0,0,viewRange),0x53616c]].forEach(([a,b,color]) => {
+          const g = new THREE.BufferGeometry().setFromPoints([a,b]); axes.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color })));
+        }); group.add(axes); return group;
+      }
+      const phoneGrid = makeGrid(RANGE, 8), robotGrid = makeGrid(ROBOT_RANGE, 10), robotOperatorAxes = new THREE.Group(); robotGrid.visible = false; robotOperatorAxes.visible = false; scene.add(phoneGrid, robotGrid, robotOperatorAxes);
+      phoneVisual.add(new THREE.Mesh(new THREE.SphereGeometry(.004, 12, 12), new THREE.MeshBasicMaterial({ color: 0x98a2ad })));
+
+      function addEdges(parent, size, color, center = new THREE.Vector3()) {
+        const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(size.x, size.y, size.z)), new THREE.LineBasicMaterial({ color })); edges.position.copy(center); parent.add(edges); return edges;
+      }
+      function makePhone(isReference = false) {
+        const group = new THREE.Group();
+        if (isReference) { addEdges(group, IPHONE, 0x98a2ad); return group; }
+        const body = new THREE.Mesh(new THREE.BoxGeometry(IPHONE.x, IPHONE.y, IPHONE.z), new THREE.MeshLambertMaterial({ color: 0x59636e, transparent: true, opacity: .96 })); group.add(body); addEdges(group, IPHONE, 0xd8dde3);
+        const screenCenter = new THREE.Vector3(0, 0, IPHONE.z / 2 + .0007);
+        const screen = new THREE.Mesh(new THREE.BoxGeometry(IPHONE.x * .88, IPHONE.y * .90, .0012), new THREE.MeshLambertMaterial({ color: 0x168aad })); screen.position.copy(screenCenter); group.add(screen); addEdges(group, { x: IPHONE.x * .88, y: IPHONE.y * .90, z: .0012 }, 0x8be1ff, screenCenter);
+        const markerCenter = new THREE.Vector3(0, .052, IPHONE.z / 2 + .0015);
+        const marker = new THREE.Mesh(new THREE.BoxGeometry(.006, .018, .0014), new THREE.MeshLambertMaterial({ color: 0x151a20 })); marker.position.copy(markerCenter); group.add(marker); addEdges(group, { x: .006, y: .018, z: .0014 }, 0xe25555, markerCenter);
+        return group;
+      }
+      phoneVisual.add(makePhone(true));
+      const device = makePhone(); phoneVisual.add(device);
+      const trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xe25555, transparent: true, opacity: .85 })); phoneVisual.add(trail);
+
+      let zero = null, previous = null, rateHz = 0, latestAt = 0, latestRaw = null, operatorFromWorld = null, stillDeadline = 0, stillSamples = [];
+      let teleopEnabled = false, teleopEpoch = null, ikBound = false, streamIsStale = false;
+      const trailPoints = [];
+      const CALIBRATION_MOVE_M = .12, CALIBRATION_RETURN_M = .045, POSITION_SCALE = .5;
+      const calibration = { mode: "phone", phase: "idle", origin: null, forwardPoint: null, rightPoint: null, deadline: 0, samples: [], metrics: null };
+      const robotCalibration = { phase: "idle", pendingCapture: null, origin: null, rightPoint: null, forwardPoint: null };
+      const positionFilter = new OneEuroVector3({ minCutoff: 2.5, beta: 5, derivativeCutoff: 1.5 });
+      const rotationFilter = new OneEuroQuaternion({ minCutoff: 2.5, beta: .8, derivativeCutoff: 1.5 });
+      let viewMode = "phone", activeRange = RANGE, robot = null, robotLoadState = "loading robot model";
+      let ikSocket = null, ikReady = false, ikRequestID = 0, lastIKRequestedAt = 0, ikSummary = "IK waiting for calibration";
+      let robotFromOperator = new THREE.Matrix3().identity(), alignmentSource = "identity-uncalibrated", awaitingAlignmentCalibration = false;
+      const alignmentStorageKey = `pose-hub:${sessionId}:robot-from-operator`;
+      const targetJointValues = new Map(), currentJointValues = new Map();
+      function resetPoseFilters() { positionFilter.reset(); rotationFilter.reset(); }
+      function matrixToRowMajor(matrix) {
+        const e = matrix.elements;
+        return [e[0],e[4],e[8],e[12], e[1],e[5],e[9],e[13], e[2],e[6],e[10],e[14], e[3],e[7],e[11],e[15]];
+      }
+      function setRobotAlignment(values, source, persist = true) {
+        if (!Array.isArray(values) || values.length !== 9 || !values.every(Number.isFinite)) return;
+        robotFromOperator = new THREE.Matrix3().set(...values); alignmentSource = source || "restored-calibration";
+        if (persist) localStorage.setItem(alignmentStorageKey, JSON.stringify(values));
+        updateRobotOperatorAxes();
+      }
+      function updateRobotOperatorAxes() {
+        robotOperatorAxes.clear();
+        [[1,0,0,0xd94841],[0,1,0,0x27864a],[0,0,1,0x168aad]].forEach(([x,y,z,color]) => {
+          const end = new THREE.Vector3(x,y,z).applyMatrix3(robotFromOperator).multiplyScalar(ROBOT_RANGE * .7);
+          robotOperatorAxes.add(new THREE.ArrowHelper(end.clone().normalize(), new THREE.Vector3(), end.length(), color, .055, .025));
+        });
+      }
+      function restoreRobotAlignment() {
+        try {
+          const values = JSON.parse(localStorage.getItem(alignmentStorageKey));
+          if (Array.isArray(values) && values.length === 9 && values.every(Number.isFinite)) {
+            setRobotAlignment(values, "restored-calibration", false);
+            ikSocket.send(JSON.stringify({ type: "set_alignment", robot_from_operator: values }));
+            return;
+          }
+        } catch (_) {}
+        ikSocket.send(JSON.stringify({ type: "get_alignment" }));
+      }
+      function positionCamera() {
+        const robotMode = viewMode === "robot";
+        if (!robotMode) {
+          camera.position.set(0, -.93, .54); controls.target.set(0, 0, 0); controls.maxDistance = 1.5; controls.update(); return;
+        }
+        if (robot) {
+          robot.updateMatrixWorld(true);
+          const sphere = new THREE.Box3().setFromObject(robot).getBoundingSphere(new THREE.Sphere());
+          const rect = viewport.getBoundingClientRect(), aspect = rect.width / Math.max(rect.height, 1);
+          const halfFov = THREE.MathUtils.degToRad(camera.fov * .5);
+          const distance = sphere.radius / Math.sin(halfFov) * 1.18 / Math.min(1, aspect);
+          const direction = new THREE.Vector3(1.25, -1.55, .9).normalize();
+          camera.position.copy(sphere.center).addScaledVector(direction, distance);
+          camera.near = Math.max(.01, distance - sphere.radius * 2.2); camera.far = distance + sphere.radius * 4; camera.updateProjectionMatrix();
+          controls.target.copy(sphere.center); controls.maxDistance = Math.max(4, distance * 2); controls.update(); return;
+        }
+        const target = new THREE.Vector3(-.25, 0, .3), basePosition = new THREE.Vector3(1.45, -1.55, 1.15);
+        const rect = viewport.getBoundingClientRect(), aspect = rect.width / Math.max(rect.height, 1);
+        const narrowScreenScale = 1 + Math.max(0, .95 - aspect) * 3;
+        camera.position.copy(target).add(basePosition.sub(target).multiplyScalar(narrowScreenScale));
+        controls.target.copy(target); controls.maxDistance = 4; controls.update();
+      }
+      function setVisualizationMode(mode) {
+        viewMode = mode; const robotMode = mode === "robot";
+        phoneVisual.visible = !robotMode; phoneGrid.visible = !robotMode; robotVisual.visible = robotMode; robotGrid.visible = robotMode; robotOperatorAxes.visible = robotMode;
+        legend.hidden = robotMode; phoneModeButton.classList.toggle("active", !robotMode); robotModeButton.classList.toggle("active", robotMode);
+        activeRange = robotMode ? ROBOT_RANGE : RANGE;
+        positionCamera();
+        values.textContent = values.textContent.replace(/VIEW\s+(?:28DoF ROBOT|IPHONE)/, `VIEW    ${robotMode ? "28DoF ROBOT" : "IPHONE"}`);
+        if (robotMode) ikSummary = robot ? (operatorFromWorld ? "IK ready" : "IK waiting for calibration") : robotLoadState;
+      }
+      function applyIKSolution(solution) {
+        solution.joint_names.forEach((name, index) => { const value = solution.joint_positions_rad[index]; targetJointValues.set(name, value); if (!currentJointValues.has(name)) currentJointValues.set(name, value); });
+        ikSummary = solution.converged ? `IK ${(solution.position_error_m * 1000).toFixed(1)} mm  ${(solution.rotation_error_rad * 180 / Math.PI).toFixed(1)} deg  ${solution.solve_ms.toFixed(1)} ms  4090` : `IK unreachable  ${(solution.position_error_m * 1000).toFixed(1)} mm`;
+      }
+      function requestIKBind() {
+        ikBound = false;
+        if (!teleopEnabled || !ikReady || !ikSocket || ikSocket.readyState !== WebSocket.OPEN) return;
+        ikSummary = "binding phone to current robot pose";
+        ikSocket.send(JSON.stringify({ type: "bind" }));
+      }
+      function connectIK() {
+        if (!viewerToken) return;
+        const scheme = location.protocol === "https:" ? "wss" : "ws";
+        ikSocket = new WebSocket(`${scheme}://${location.host}/ws/ik/${encodeURIComponent(sessionId)}`);
+        ikSocket.onopen = () => ikSocket.send(JSON.stringify({ type: "auth", token: viewerToken }));
+        ikSocket.onmessage = event => {
+          const message = JSON.parse(event.data);
+          if (message.type === "authenticated") {
+            ikReady = true; ikSummary = operatorFromWorld ? "IK ready on 4090" : "IK waiting for calibration";
+            restoreRobotAlignment();
+            if (teleopEnabled) requestIKBind();
+          }
+          else if (message.type === "ik_bound") {
+            ikBound = true;
+            applyIKSolution({ ...message, converged: true, position_error_m: 0, rotation_error_rad: 0, solve_ms: 0 });
+            ikSummary = `BOUND  ${message.reference}`;
+          }
+          else if (message.type === "ik") applyIKSolution(message);
+          else if (message.type === "robot_pose") handleRobotPose(message);
+          else if (message.type === "alignment") {
+            setRobotAlignment(message.robot_from_operator, message.alignment_source, Boolean(message.calibrated));
+            if (!message.calibrated) localStorage.removeItem(alignmentStorageKey);
+            if (awaitingAlignmentCalibration) finishRobotCalibration(message);
+          }
+          else if (message.type === "ik_error") {
+            ikSummary = message.detail;
+            if (calibration.mode === "robot" && !calibrationOverlay.hidden && (robotCalibration.pendingCapture || awaitingAlignmentCalibration)) robotCalibrationError(message.detail);
+          }
+        };
+        ikSocket.onclose = () => { ikReady = false; ikSummary = "IK reconnecting to 4090"; setTimeout(connectIK, 1000); };
+        ikSocket.onerror = () => ikSocket.close();
+      }
+      function requestIK(transform) {
+        if (viewMode !== "robot" || !robot || !operatorFromWorld || !teleopEnabled || !ikBound || !ikReady || ikSocket.readyState !== WebSocket.OPEN || performance.now() - lastIKRequestedAt < 30) return;
+        if (ikSocket.bufferedAmount > 16_384) return;
+        lastIKRequestedAt = performance.now(); ikRequestID += 1;
+        ikSocket.send(JSON.stringify({ type: "solve", request_id: ikRequestID, position_scale: POSITION_SCALE, relative_transform: matrixToRowMajor(transform) }));
+      }
+      function updateRobotJoints(dt) {
+        if (!robot) return; const amount = 1 - Math.exp(-dt / .055);
+        targetJointValues.forEach((target, name) => { const current = currentJointValues.get(name) ?? target, value = current + amount * (target - current); currentJointValues.set(name, value); robot.joints[name]?.setJointValue(value); });
+      }
+      const urdfLoader = new URDFLoader();
+      urdfLoader.load(
+        "/robot-assets/ur5_wrist_wuji_right.urdf",
+        loaded => {
+          robot = loaded; robot.name = "UR5 Wrist Wujihand 28DoF";
+          robot.traverse(object => { if (object.isMesh) { object.castShadow = false; object.receiveShadow = false; } });
+          robotVisual.add(robot); robotLoadState = "robot model ready"; if (viewMode === "robot") { ikSummary = operatorFromWorld ? "IK ready" : "IK waiting for calibration"; positionCamera(); }
+        },
+        undefined,
+        error => { robotLoadState = "robot model failed"; ikSummary = error?.message || robotLoadState; },
+      );
+      function matrixFromRowMajor(v) { return new THREE.Matrix4().set(...v); }
+      function rawPosition(matrix) { return new THREE.Vector3().setFromMatrixPosition(matrix); }
+      function relativePose(current) {
+        if (!zero) { zero = current.clone(); }
+        const zeroRotation = new THREE.Matrix3().setFromMatrix4(zero);
+        const currentRotation = new THREE.Matrix3().setFromMatrix4(current);
+        const position = rawPosition(current).sub(rawPosition(zero));
+        let relativeRotation;
+        if (operatorFromWorld) {
+          const worldRelative = currentRotation.clone().multiply(zeroRotation.clone().transpose());
+          relativeRotation = operatorFromWorld.clone().multiply(worldRelative).multiply(operatorFromWorld.clone().transpose());
+          position.applyMatrix3(operatorFromWorld);
+        } else {
+          const baseFromWorld = zeroRotation.clone().transpose();
+          relativeRotation = baseFromWorld.clone().multiply(currentRotation);
+          position.applyMatrix3(baseFromWorld);
+        }
+        const transform = new THREE.Matrix4().setFromMatrix3(relativeRotation); transform.setPosition(position); return transform;
+      }
+      function updateTeleoperation(pose, current) {
+        const enabled = typeof pose.teleop_enabled === "boolean" ? pose.teleop_enabled : true;
+        const epoch = Number.isInteger(pose.teleop_epoch) ? pose.teleop_epoch : 0;
+        const newEngagement = enabled && (!teleopEnabled || epoch !== teleopEpoch);
+        teleopEnabled = enabled; teleopEpoch = epoch;
+        if (newEngagement) {
+          zero = current.clone(); resetPoseFilters(); trailPoints.length = 0; trail.geometry.setFromPoints([]);
+          requestIKBind();
+        } else if (!enabled) {
+          ikBound = false;
+          ikSummary = "HOLD - press and hold on iPhone to bind";
+        }
+      }
+      function setCalibrationView({ step, title, instruction, progress = 0, reading = "", action = "", actionVisible = false }) {
+        calibrationStep.textContent = step; calibrationTitle.textContent = title; calibrationInstruction.textContent = instruction;
+        calibrationProgress.style.width = `${Math.max(0, Math.min(1, progress)) * 100}%`; calibrationReading.textContent = reading;
+        calibrationAction.textContent = action; calibrationAction.hidden = !actionVisible;
+      }
+      function requestRobotPose(capture) {
+        if (!ikReady || !ikSocket || ikSocket.readyState !== WebSocket.OPEN) {
+          robotCalibrationError("IK WebSocket 尚未连接，请稍后重试。"); return;
+        }
+        robotCalibration.pendingCapture = capture; ikRequestID += 1;
+        calibrationReading.textContent = "正在读取机械臂实时关节状态...";
+        ikSocket.send(JSON.stringify({ type: "robot_pose", request_id: ikRequestID }));
+      }
+      function handleRobotPose(message) {
+        const capture = robotCalibration.pendingCapture;
+        if (!capture || !Array.isArray(message.translation_m)) return;
+        robotCalibration.pendingCapture = null;
+        const point = message.translation_m;
+        if (capture === "origin") {
+          robotCalibration.origin = point; robotCalibration.phase = "right";
+          setCalibrationView({ step: "Robot 2 / 3", title: "机械臂向右", instruction: "使用机械臂示教或点动，让掌心沿操作员右侧移动至少 8 cm；保持掌心朝向基本不变，然后采集。", reading: `原点 ${triplet(point, 3)} m`, action: "采集右侧点", actionVisible: true });
+        } else if (capture === "right") {
+          robotCalibration.rightPoint = point; robotCalibration.phase = "forward";
+          setCalibrationView({ step: "Robot 3 / 3", title: "机械臂向前", instruction: "先回到刚才原点，再让掌心沿操作员正前方移动至少 8 cm，然后采集。", reading: `右侧点 ${triplet(point, 3)} m`, action: "采集前方点", actionVisible: true });
+        } else if (capture === "forward") {
+          robotCalibration.forwardPoint = point; awaitingAlignmentCalibration = true;
+          calibrationAction.hidden = true; calibrationReading.textContent = "正在计算机器人轴对齐...";
+          ikSocket.send(JSON.stringify({ type: "calibrate_alignment", origin: robotCalibration.origin, right_point: robotCalibration.rightPoint, forward_point: robotCalibration.forwardPoint }));
+        }
+      }
+      function finishRobotCalibration(message) {
+        awaitingAlignmentCalibration = false; robotCalibration.phase = "complete"; calibration.phase = "complete";
+        setCalibrationView({ step: "Robot calibrated", title: "机械臂坐标系绑定完成", instruction: "操作员向右、向前、向上已映射到机器人 base_link。重新按住 iPhone 时会从机械臂当前掌心位姿继续。", progress: 1, reading: `right ${(message.right_distance_m * 100).toFixed(1)} cm  forward ${(message.forward_distance_m * 100).toFixed(1)} cm  angle ${message.angle_deg.toFixed(1)} deg`, action: "进入实时视图", actionVisible: true });
+        result.textContent = "Phone and robot coordinate frames calibrated. Hold on iPhone to bind current palm pose.";
+        if (teleopEnabled) requestIKBind();
+      }
+      function robotCalibrationError(message) {
+        awaitingAlignmentCalibration = false; robotCalibration.pendingCapture = null; robotCalibration.phase = "error";
+        setCalibrationView({ step: "Robot calibration failed", title: "机械臂坐标采集失败", instruction: message, reading: "确认 4090 正持续回传关节状态，并让两次移动超过 8 cm、方向接近垂直。", action: "重新开始", actionVisible: true });
+      }
+      function openRobotCalibration() {
+        calibration.mode = "robot"; calibration.phase = "robot"; calibrationOverlay.hidden = false; setVisualizationMode("robot");
+        robotCalibration.phase = "idle"; robotCalibration.pendingCapture = null; robotCalibration.origin = null; robotCalibration.rightPoint = null; robotCalibration.forwardPoint = null;
+        setCalibrationView({ step: "Robot 1 / 3", title: "采集机械臂原点", instruction: "先松开 iPhone 控制。将机械臂停在准备开始遥操的姿态；这里只读取关节状态，不会命令机械臂运动。", reading: "等待采集当前 right_palm_link 位姿", action: "采集原点", actionVisible: true });
+      }
+      function robotCalibrationAction() {
+        if (robotCalibration.phase === "complete") { calibrationOverlay.hidden = true; return; }
+        if (robotCalibration.phase === "idle" || robotCalibration.phase === "error") { openRobotCalibration(); requestRobotPose("origin"); }
+        else if (robotCalibration.phase === "right") requestRobotPose("right");
+        else if (robotCalibration.phase === "forward") requestRobotPose("forward");
+      }
+      function meanPosition(samples) {
+        const mean = new THREE.Vector3(); samples.forEach(sample => mean.add(sample)); return mean.multiplyScalar(1 / Math.max(samples.length, 1));
+      }
+      function startCalibration() {
+        if (!latestRaw) { calibrationReading.textContent = "等待 iPhone 实时位姿..."; return; }
+        operatorFromWorld = null; zero = latestRaw.clone(); resetPoseFilters(); trailPoints.length = 0; trail.geometry.setFromPoints([]);
+        calibration.phase = "origin"; calibration.deadline = performance.now() + 2500; calibration.samples = [];
+        setCalibrationView({ step: "Step 1 / 4", title: "保持在起点", instruction: "把手机放在操作起点，保持当前朝向并静止，倒计时结束后自动采集。", reading: "2.5 s", progress: 0 });
+      }
+      function calibrationError(message) {
+        calibration.phase = "error";
+        setCalibrationView({ step: "Calibration failed", title: "需要重新采集", instruction: message, reading: "两次移动应在同一水平面且接近垂直。", action: "重新开始", actionVisible: true });
+      }
+      function processCalibration(current) {
+        const point = rawPosition(current), now = performance.now();
+        if (calibration.phase === "idle") {
+          calibrationReading.textContent = "实时流已连接，可以开始";
+          return;
+        }
+        if (calibration.phase === "origin") {
+          const remaining = Math.max(0, calibration.deadline - now);
+          if (remaining <= 700) calibration.samples.push(point.clone());
+          calibrationProgress.style.width = `${(1 - remaining / 2500) * 100}%`; calibrationReading.textContent = `${(remaining / 1000).toFixed(1)} s`;
+          if (remaining === 0) {
+            calibration.origin = meanPosition(calibration.samples.length ? calibration.samples : [point]); calibration.phase = "forward";
+            setCalibrationView({ step: "Step 2 / 4", title: "向前移动", instruction: "保持手机朝向不变，沿你认为的正前方直线移动至少 12 cm。", reading: "0.0 / 12 cm" });
+          }
+          return;
+        }
+        const distance = point.distanceTo(calibration.origin);
+        if (calibration.phase === "forward") {
+          calibrationProgress.style.width = `${Math.min(1, distance / CALIBRATION_MOVE_M) * 100}%`; calibrationReading.textContent = `${(distance * 100).toFixed(1)} / 12 cm`;
+          if (distance >= CALIBRATION_MOVE_M) {
+            calibration.forwardPoint = point.clone(); calibration.phase = "returnForward";
+            setCalibrationView({ step: "Step 3 / 4", title: "回到起点", instruction: "把手机沿原路径移回刚才的起点。", reading: `${(distance * 100).toFixed(1)} cm from origin` });
+          }
+          return;
+        }
+        if (calibration.phase === "returnForward") {
+          calibrationProgress.style.width = `${Math.max(0, 1 - distance / CALIBRATION_MOVE_M) * 100}%`; calibrationReading.textContent = `${(distance * 100).toFixed(1)} cm from origin`;
+          if (distance <= CALIBRATION_RETURN_M) {
+            calibration.phase = "right";
+            setCalibrationView({ step: "Step 4 / 4", title: "向右移动", instruction: "保持手机朝向不变，从起点沿你的正右方直线移动至少 12 cm。", reading: "0.0 / 12 cm" });
+          }
+          return;
+        }
+        if (calibration.phase === "right") {
+          calibrationProgress.style.width = `${Math.min(1, distance / CALIBRATION_MOVE_M) * 100}%`; calibrationReading.textContent = `${(distance * 100).toFixed(1)} / 12 cm`;
+          if (distance >= CALIBRATION_MOVE_M) {
+            calibration.rightPoint = point.clone();
+            try {
+              const built = buildOperatorBasis({ origin: calibration.origin.toArray(), forwardPoint: calibration.forwardPoint.toArray(), rightPoint: calibration.rightPoint.toArray() });
+              operatorFromWorld = new THREE.Matrix3().set(...built.matrix); calibration.metrics = built; calibration.phase = "returnFinal";
+              setCalibrationView({ step: "Final", title: "再次回到起点", instruction: "坐标方向已识别。回到起点后将自动设零。", reading: `${(distance * 100).toFixed(1)} cm from origin` });
+            } catch (error) { calibrationError(error.message); }
+          }
+          return;
+        }
+        if (calibration.phase === "returnFinal") {
+          calibrationProgress.style.width = `${Math.max(0, 1 - distance / CALIBRATION_MOVE_M) * 100}%`; calibrationReading.textContent = `${(distance * 100).toFixed(1)} cm from origin`;
+          if (distance <= CALIBRATION_RETURN_M) {
+            zero = current.clone(); resetPoseFilters(); trailPoints.length = 0; trail.geometry.setFromPoints([]); calibration.phase = "complete";
+            const metrics = calibration.metrics;
+            setCalibrationView({ step: "Phone calibrated", title: "手机坐标系完成", instruction: "手机的向右、向前、向上已经识别。下一步用机械臂掌心移动校准 base_link 与操作坐标之间的方向。", progress: 1, reading: `forward ${(metrics.forwardDistance * 100).toFixed(1)} cm  right ${(metrics.rightDistance * 100).toFixed(1)} cm  angle ${metrics.angleDeg.toFixed(1)} deg`, action: "继续校准机械臂", actionVisible: true });
+            result.textContent = "Phone operator frame calibrated. Continue with robot-axis calibration.";
+          }
+        }
+      }
+      function eulerXYZDegrees(matrix) {
+        const e = matrix.elements, r20 = e[2];
+        const y = Math.asin(Math.max(-1, Math.min(1, -r20)));
+        let x, z;
+        if (Math.abs(Math.cos(y)) > 1e-6) { x = Math.atan2(e[6], e[10]); z = Math.atan2(e[1], e[0]); }
+        else { x = Math.atan2(-e[9], e[5]); z = 0; }
+        const d = 180 / Math.PI; return [x*d, y*d, z*d];
+      }
+      function triplet(v, precision) { return v.map(n => `${n >= 0 ? "+" : ""}${n.toFixed(precision)}`).join("  "); }
+      function reset() { zero = latestRaw ? latestRaw.clone() : null; resetPoseFilters(); trailPoints.length = 0; trail.geometry.setFromPoints([]); stillDeadline = 0; stillSamples = []; if (teleopEnabled) requestIKBind(); result.textContent = "Zero reset and robot reference rebound. Press S for a 5 s still test."; }
+      function startStillTest() { if (!latestAt) return; stillDeadline = performance.now() + STILL_SECONDS * 1000; stillSamples = []; result.textContent = `Still test running: ${STILL_SECONDS.toFixed(1)} s\nDo not touch the phone.`; }
+      function standardDeviation(samples) { const mean = samples.reduce((a,b) => a+b,0) / samples.length; return Math.sqrt(samples.reduce((a,b) => a+(b-mean)**2,0) / samples.length); }
+      function finishStillTest() {
+        if (stillSamples.length < 2) { result.textContent = "Still test failed: fewer than two frames.\nCheck tracking and press S again."; return; }
+        const positions = [0,1,2].map(i => stillSamples.map(s => s.position[i] * 1000));
+        const first = stillSamples[0].quaternion, mean = new THREE.Vector4();
+        stillSamples.forEach(s => { const q = s.quaternion.clone(); if (q.dot(first) < 0) q.set(-q.x,-q.y,-q.z,-q.w); mean.add(q); });
+        const meanQ = new THREE.Quaternion(mean.x, mean.y, mean.z, mean.w).normalize();
+        const residuals = stillSamples.map(s => { const q = meanQ.clone().invert().multiply(s.quaternion).normalize(), angle = 2 * Math.acos(Math.max(-1, Math.min(1, q.w))), scale = Math.abs(Math.sin(angle/2)) > 1e-8 ? angle / Math.sin(angle/2) : 2; return [q.x*scale*180/Math.PI,q.y*scale*180/Math.PI,q.z*scale*180/Math.PI]; });
+        const rotations = [0,1,2].map(i => residuals.map(v => v[i]));
+        const spans = positions.map(a => Math.max(...a) - Math.min(...a));
+        const std = positions.map(standardDeviation), rstd = rotations.map(standardDeviation);
+        const rms = Math.sqrt(rotations[0].map((_, i) => rotations.reduce((sum, a) => sum + a[i] ** 2, 0)).reduce((s,v) => s+v, 0) / stillSamples.length);
+        const peak = Math.max(...rotations[0].map((_, i) => Math.hypot(...rotations.map(a => a[i]))));
+        result.textContent = `STILL REPEATABILITY (${stillSamples.length} frames)\nXYZ std  (mm)\n${triplet(std, 2)}\nXYZ span (mm)\n${triplet(spans, 2)}\nRot std  (deg)\n${triplet(rstd, 3)}\nRot RMS  ${rms.toFixed(3)} deg\nRot peak ${peak.toFixed(3)} deg`;
+      }
+      function updatePose(message) {
+        const pose = message.pose, current = matrixFromRowMajor(pose.world_from_camera); latestRaw = current.clone(); processCalibration(current); updateTeleoperation(pose, current);
+        const timestamp = Number(pose.timestamp_s ?? pose.timestamp ?? message.received_at_unix_s);
+        const rawRelative = relativePose(current), rawPositionValue = new THREE.Vector3().setFromMatrixPosition(rawRelative), rawQuaternion = new THREE.Quaternion().setFromRotationMatrix(rawRelative);
+        const filteredPosition = positionFilter.filter(rawPositionValue.toArray(), timestamp), filteredQuaternion = rotationFilter.filter(rawQuaternion.toArray(), timestamp);
+        const relative = new THREE.Matrix4().compose(new THREE.Vector3(...filteredPosition), new THREE.Quaternion(...filteredQuaternion), new THREE.Vector3(1, 1, 1));
+        device.matrixAutoUpdate = false; device.matrix.copy(relative); device.matrixWorldNeedsUpdate = true;
+        const p = new THREE.Vector3(...filteredPosition); trailPoints.push(p); if (trailPoints.length > TRAIL_SAMPLES) trailPoints.shift(); trail.geometry.setFromPoints(trailPoints);
+        requestIK(relative);
+        if (previous && Number.isFinite(timestamp)) { const hz = (pose.sequence - previous.sequence) / Math.max(timestamp - previous.timestamp, 1e-6); rateHz = rateHz ? .9 * rateHz + .1 * hz : hz; }
+        previous = { sequence: pose.sequence, timestamp };
+        const rpy = eulerXYZDegrees(relative), tracking = pose.tracking;
+        values.textContent = `${operatorFromWorld ? "CALIBRATED" : "RAW"} RELATIVE 6DoF\nONE EURO LOW-LATENCY\nCONTROL ${teleopEnabled ? "ENGAGED" : "HOLD"}\nVIEW    ${viewMode === "robot" ? "28DoF ROBOT" : "IPHONE"}${viewMode === "robot" ? `\nALIGN   ${alignmentSource}` : ""}\n\nXYZ (m)\n${triplet([p.x,p.y,p.z], 4)}\n\nXYZ (mm)\n${triplet([p.x*1000,p.y*1000,p.z*1000], 1)}\n\nRPY (deg)\n${triplet(rpy, 1)}\n\nrate    ${rateHz.toFixed(1).padStart(5)} Hz\nframe   ${String(pose.sequence).padStart(6)}\nquality ${tracking}${viewMode === "robot" ? `\n${ikSummary}` : ""}`;
+        latestAt = message.received_at_unix_s; streamIsStale = false; status.textContent = "Receiving iPhone pose frames"; status.style.color = "#1a7f37";
+        if (stillDeadline) { stillSamples.push({ position: [p.x,p.y,p.z], quaternion: new THREE.Quaternion().setFromRotationMatrix(relative) }); const remain = stillDeadline - performance.now(); if (remain > 0) result.textContent = `Still test running: ${(remain/1000).toFixed(1)} s\nsamples: ${stillSamples.length}`; else { stillDeadline = 0; finishStillTest(); } }
+      }
+      function connect() {
+        if (!viewerToken) { status.textContent = "Missing viewer token"; status.style.color = "#b42318"; return; }
+        const scheme = location.protocol === "https:" ? "wss" : "ws";
+        const socket = new WebSocket(`${scheme}://${location.host}/ws/view/${encodeURIComponent(sessionId)}`);
+        socket.onopen = () => socket.send(JSON.stringify({ type: "auth", token: viewerToken }));
+        socket.onmessage = event => { const message = JSON.parse(event.data); if (message.type === "pose") updatePose(message); };
+        socket.onclose = () => { status.textContent = "Viewer disconnected; reconnecting..."; status.style.color = "#b42318"; setTimeout(connect, 1500); };
+        socket.onerror = () => socket.close();
+      }
+      function resize() {
+        const rect = viewport.getBoundingClientRect(), compact = rect.width <= 760;
+        camera.aspect = rect.width / rect.height; camera.updateProjectionMatrix(); renderer.setSize(rect.width, rect.height); positionCamera();
+        const labels = compact ? ["+X right", "+Y forward", "+Z up"] : ["+X  operator right (m)", "+Y  toward monitor (m)", "+Z  above table (m)"];
+        axisLabels.forEach((label, index) => { label.textContent = labels[index]; });
+      }
+      function updateAxisLabels() {
+        const pts = [new THREE.Vector3(activeRange, 0, 0), new THREE.Vector3(0, activeRange, 0), new THREE.Vector3(0, 0,activeRange)];
+        if (viewMode === "robot") pts.forEach(point => point.applyMatrix3(robotFromOperator));
+        pts.forEach((p,i) => {
+          p.project(camera); const rect = viewport.getBoundingClientRect(), label = axisLabels[i];
+          let left = (p.x + 1) * rect.width / 2 + 5, top = (-p.y + 1) * rect.height / 2 - 12;
+          if (i === 2 && rect.width <= 760) {
+            const switchRect = modeSwitch.getBoundingClientRect();
+            left = Math.min(left, switchRect.left - rect.left - label.offsetWidth - 8);
+          }
+          label.style.left = `${Math.max(7, Math.min(left, rect.width - label.offsetWidth - 7))}px`;
+          label.style.top = `${Math.max(7, Math.min(top, rect.height - label.offsetHeight - 7))}px`;
+        });
+      }
+      function openCalibration() { calibration.mode = "phone"; calibrationOverlay.hidden = false; calibration.phase = "idle"; setVisualizationMode("phone"); setCalibrationView({ step: "Coordinate setup", title: "绑定手机操作坐标系", instruction: "先用两次直线移动识别手机的“向前”和“向右”，随后会继续校准机械臂基座方向。", reading: latestRaw ? "实时流已连接，可以开始" : "等待实时位姿...", action: "开始校准", actionVisible: true }); }
+      calibrationAction.addEventListener("click", () => {
+        if (calibration.mode === "robot") robotCalibrationAction();
+        else if (calibration.phase === "complete") openRobotCalibration();
+        else startCalibration();
+      });
+      phoneModeButton.addEventListener("click", () => setVisualizationMode("phone")); robotModeButton.addEventListener("click", () => setVisualizationMode("robot"));
+      document.querySelector("#calibrate").addEventListener("click", openCalibration); document.querySelector("#robot-calibrate").addEventListener("click", openRobotCalibration); document.querySelector("#reset").addEventListener("click", reset); document.querySelector("#still").addEventListener("click", startStillTest);
+      addEventListener("keydown", event => { if (event.key === " " || event.key.toLowerCase() === "r") { event.preventDefault(); reset(); } else if (event.key.toLowerCase() === "c") openCalibration(); else if (event.key.toLowerCase() === "a") openRobotCalibration(); else if (event.key.toLowerCase() === "s") startStillTest(); else if (event.key === "Escape" || event.key.toLowerCase() === "q") status.textContent = "Viewer remains open"; });
+      addEventListener("resize", resize); resize(); connectIK();
+      updateRobotOperatorAxes();
+      let previousRenderAt = performance.now();
+      (function render(now) {
+        requestAnimationFrame(render);
+        const dt = Math.min(.05, Math.max(0, (now - previousRenderAt) / 1000)); previousRenderAt = now;
+        if (latestAt && Date.now() / 1000 - latestAt > .75 && !streamIsStale) {
+          streamIsStale = true; teleopEnabled = false; ikBound = false; ikSummary = "HOLD - iPhone stream stale";
+          status.textContent = "iPhone pose stream stale - robot target held"; status.style.color = "#b42318";
+        }
+        updateRobotJoints(dt); controls.update(); updateAxisLabels(); renderer.render(scene, camera);
+      })(performance.now()); connect();
+    </script>
+  </body>
+</html>

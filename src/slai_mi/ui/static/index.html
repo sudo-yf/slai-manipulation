@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>SLaI 采集设备检查台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-block">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div>
+          <h1>设备检查台</h1>
+          <p>SLaI Manipulation Intelligence</p>
+        </div>
+      </div>
+      <div class="topbar-status">
+        <div class="system-state" id="system-state">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="system-state-text">正在连接</span>
+        </div>
+        <time id="local-time"></time>
+        <button class="icon-button" id="refresh-button" type="button" title="立即刷新" aria-label="立即刷新">
+          &#8635;
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="camera-grid" aria-label="RealSense 相机">
+        <article class="camera-card accent-coral" data-camera="primary">
+          <header class="camera-header">
+            <div>
+              <div class="role-line"><h2>手部数采</h2><span class="capture-tag">数采</span></div>
+              <p class="camera-model">Camera</p>
+            </div>
+            <span class="device-state"><i></i><b>连接中</b></span>
+          </header>
+          <div class="camera-viewport">
+            <img alt="主相机实时画面" />
+            <div class="camera-placeholder">
+              <span class="placeholder-mark" aria-hidden="true"></span>
+              <strong>等待视频流</strong>
+              <small></small>
+            </div>
+            <span class="live-label">LIVE</span>
+          </div>
+          <footer class="camera-meta">
+            <code>primary</code>
+            <span class="resolution">640 x 480</span>
+            <span class="fps">0.0 FPS</span>
+          </footer>
+        </article>
+
+        <article class="camera-card accent-blue" data-camera="secondary">
+          <header class="camera-header">
+            <div>
+              <div class="role-line"><h2>主视角</h2></div>
+              <p class="camera-model">Camera</p>
+            </div>
+            <span class="device-state"><i></i><b>连接中</b></span>
+          </header>
+          <div class="camera-viewport">
+            <img alt="副相机实时画面" />
+            <div class="camera-placeholder">
+              <span class="placeholder-mark" aria-hidden="true"></span>
+              <strong>等待视频流</strong>
+              <small></small>
+            </div>
+            <span class="live-label">LIVE</span>
+          </div>
+          <footer class="camera-meta">
+            <code>secondary</code>
+            <span class="resolution">640 x 480</span>
+            <span class="fps">0.0 FPS</span>
+          </footer>
+        </article>
+
+        <article class="camera-card accent-teal" data-camera="wrist">
+          <header class="camera-header">
+            <div>
+              <div class="role-line"><h2>副视角</h2></div>
+              <p class="camera-model">Camera</p>
+            </div>
+            <span class="device-state"><i></i><b>连接中</b></span>
+          </header>
+          <div class="camera-viewport">
+            <img alt="腕部相机实时画面" />
+            <div class="camera-placeholder">
+              <span class="placeholder-mark" aria-hidden="true"></span>
+              <strong>等待视频流</strong>
+              <small></small>
+            </div>
+            <span class="live-label">LIVE</span>
+          </div>
+          <footer class="camera-meta">
+            <code>wrist</code>
+            <span class="resolution">640 x 480</span>
+            <span class="fps">0.0 FPS</span>
+          </footer>
+        </article>
+      </section>
+
+      <section class="spacemouse-panel" id="spacemouse-panel" aria-labelledby="spacemouse-title">
+        <header class="spacemouse-header">
+          <div>
+            <div class="role-line">
+              <h2 id="spacemouse-title">SpaceMouse Pro</h2>
+              <span class="monitor-tag">输入监测</span>
+            </div>
+            <p id="spacemouse-device">正在检查 spacenavd</p>
+          </div>
+          <span class="device-state" id="spacemouse-state"><i></i><b>连接中</b></span>
+        </header>
+
+        <div class="spacemouse-body">
+          <div class="vector-section">
+            <div class="vector-block">
+              <span class="section-label">平移</span>
+              <div class="vector-field" id="translation-field">
+                <span class="field-line-x"></span>
+                <span class="field-line-y"></span>
+                <span class="field-dot"></span>
+                <b>X / Y</b>
+              </div>
+              <div class="z-meter" id="translation-z"><span></span><i></i></div>
+              <small>Z</small>
+            </div>
+            <div class="vector-block">
+              <span class="section-label">旋转</span>
+              <div class="vector-field" id="rotation-field">
+                <span class="field-line-x"></span>
+                <span class="field-line-y"></span>
+                <span class="field-dot"></span>
+                <b>RX / RY</b>
+              </div>
+              <div class="z-meter" id="rotation-z"><span></span><i></i></div>
+              <small>RZ</small>
+            </div>
+          </div>
+
+          <div class="axis-section" aria-label="六轴数值">
+            <div class="axis-row" data-axis="0"><b>X</b><div class="axis-track"><span></span><i></i></div><output>0.000</output></div>
+            <div class="axis-row" data-axis="1"><b>Y</b><div class="axis-track"><span></span><i></i></div><output>0.000</output></div>
+            <div class="axis-row" data-axis="2"><b>Z</b><div class="axis-track"><span></span><i></i></div><output>0.000</output></div>
+            <div class="axis-row" data-axis="3"><b>RX</b><div class="axis-track"><span></span><i></i></div><output>0.000</output></div>
+            <div class="axis-row" data-axis="4"><b>RY</b><div class="axis-track"><span></span><i></i></div><output>0.000</output></div>
+            <div class="axis-row" data-axis="5"><b>RZ</b><div class="axis-track"><span></span><i></i></div><output>0.000</output></div>
+          </div>
+
+          <div class="button-section">
+            <span class="section-label">按键</span>
+            <div class="button-states">
+              <span data-button="button_1"><i></i>1 顺时针</span>
+              <span data-button="button_2"><i></i>2 逆时针</span>
+              <span data-button="button_3"><i></i>3 记录手型</span>
+              <span data-button="home"><i></i>Home</span>
+              <span data-button="shift"><i></i>Shift</span>
+              <span data-button="ctrl"><i></i>Ctrl</span>
+            </div>
+            <div class="activity-state" id="activity-state">
+              <span></span>
+              <div><b>静止</b><small>等待输入</small></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

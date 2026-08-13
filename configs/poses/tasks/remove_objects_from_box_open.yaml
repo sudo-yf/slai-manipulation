@@ -1,0 +1,12 @@
+schema_version: 1
+name: remove_objects_from_box_open
+kind: hand_preset
+configured: false
+units: rad
+joint_group: wujihand
+joint_names: [right_finger1_joint1, right_finger1_joint2, right_finger1_joint3, right_finger1_joint4, right_finger2_joint1, right_finger2_joint2, right_finger2_joint3, right_finger2_joint4, right_finger3_joint1, right_finger3_joint2, right_finger3_joint3, right_finger3_joint4, right_finger4_joint1, right_finger4_joint2, right_finger4_joint3, right_finger4_joint4, right_finger5_joint1, right_finger5_joint2, right_finger5_joint3, right_finger5_joint4]
+joint_positions: [0.39, 0.097, -0.021, -0.021, 0.22, -0.207, -0.025, -0.025, 0.16421498876989113, -0.14285826904113172, -0.0010163125968294215, 0.0009550280326242239, 0.14272323585068014, 0.0029978117294302284, 0.0043580095534769565, 0.007452449947923936, 0.20782616838802345, 0.21270122000433273, 0.0008546689265036048, -0.0003910789644764416]
+provenance:
+  source: legacy:task/remove_objects_from_box/config.yaml#start_pose.wuji_hand_state_0
+  record_type: historical_task_preset
+  safety_note: Historical measurement; verify before enabling motion.

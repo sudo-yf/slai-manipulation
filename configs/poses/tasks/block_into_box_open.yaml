@@ -1,0 +1,12 @@
+schema_version: 1
+name: block_into_box_open
+kind: hand_preset
+configured: false
+units: rad
+joint_group: wujihand
+joint_names: [right_finger1_joint1, right_finger1_joint2, right_finger1_joint3, right_finger1_joint4, right_finger2_joint1, right_finger2_joint2, right_finger2_joint3, right_finger2_joint4, right_finger3_joint1, right_finger3_joint2, right_finger3_joint3, right_finger3_joint4, right_finger4_joint1, right_finger4_joint2, right_finger4_joint3, right_finger4_joint4, right_finger5_joint1, right_finger5_joint2, right_finger5_joint3, right_finger5_joint4]
+joint_positions: [0.38846272859564046, 0.09036175217747225, -0.018066956363950067, -0.024368862203700836, 0.2183019960217428, -0.20780269147867644, -0.029969872288003695, -0.021127784752592152, 0.22308222713978212, -0.20578086847211993, -0.02869209526858126, -0.02812458838366304, 0.22015227140257224, -0.20825366816101828, -0.02664804468471802, -0.027316279331113004, 0.22222357615026492, -0.20411234603354328, -0.02340399750990704, -0.01623599150177595]
+provenance:
+  source: legacy:task/block_into_box/config.yaml#start_pose.wuji_hand_state_0
+  record_type: derived_from_task_start
+  safety_note: Historical measurement; verify before enabling motion.

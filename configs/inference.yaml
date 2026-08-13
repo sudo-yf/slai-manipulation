@@ -1,0 +1,6 @@
+schema_version: 1
+
+# This generic entry point intentionally supports no real-hardware target.
+target: offline
+backend: null
+checkpoint: outputs/checkpoints/latest

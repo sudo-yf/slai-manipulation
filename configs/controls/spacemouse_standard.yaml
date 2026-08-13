@@ -1,0 +1,20 @@
+schema_version: 1
+profile: spacemouse_standard
+units:
+  translation_speed: m/s
+  rotation_speed: rad/s
+motion:
+  translation_speed: 0.080
+  rotation_speed: 0.45
+  precision_translation_speed: 0.25
+  precision_rotation_speed: 0.60
+  deadzone: 0.12
+bindings:
+  menu: start_episode
+  fit: save_episode
+  esc: discard_episode_and_home
+  button_1: wrist_3_jog_clockwise
+  button_2: wrist_3_jog_counterclockwise
+  button_3: hand_grasp_hold_or_open_double_press
+  button_4: robot_home
+  ctrl_c: finalize_dataset
