@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
+import json
+import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from slai_mi.input_schema import enabled_cameras, load_input_schema
 
 
 def make_train_config(settings: dict[str, Any], *, smoke: bool = False) -> object:
@@ -19,8 +23,17 @@ def make_train_config(settings: dict[str, Any], *, smoke: bool = False) -> objec
     except ImportError as exc:
         raise RuntimeError("PI0.5 training requires an OpenPI environment") from exc
 
-    state_dim = int(settings.get("state_dim", 32))
-    action_dim = int(settings.get("action_dim", 26))
+    info = json.loads((Path(settings["converted"]) / "meta" / "info.json").read_text())
+    state_dim = int(info["features"]["state"]["shape"][0])
+    action_dim = int(info["features"]["actions"]["shape"][0])
+    schema = load_input_schema(settings["input_schema"])
+    cameras = tuple(enabled_cameras(schema))
+    model_state_dim = int(schema["pi05"]["state"]["model_pad_to"])
+    model_action_dim = int(schema["pi05"]["action"]["model_pad_to"])
+    image_slots = tuple(str(slot) for slot in schema["pi05"]["model_image_slots"])
+    delta = schema["pi05"]["action"]["delta_from_state"]
+    delta_action_indices = tuple(int(index) for index in delta["action_indices"])
+    delta_state_indices = tuple(int(index) for index in delta["state_indices"])
     prompt = str(settings["task_prompt"])
 
     @dataclasses.dataclass(frozen=True)
@@ -32,13 +45,23 @@ def make_train_config(settings: dict[str, Any], *, smoke: bool = False) -> objec
             if state.shape != (state_dim,):
                 raise ValueError(f"expected PI0.5 state[{state_dim}], got {state.shape}")
             result = make_pi05_observation(
-                primary_rgb=data["primary_rgb"],
-                secondary_rgb=data["secondary_rgb"],
                 state=state,
                 prompt=data.get("prompt", prompt),
+                images={
+                    str(camera["policy_key"]).removeprefix("observation.images."): data[
+                        str(camera["openpi_key"])
+                    ]
+                    for camera in cameras
+                },
+                image_slots=image_slots,
             )
             if "actions" in data:
-                result["actions"] = hand_position_to_delta(data["actions"], state)
+                result["actions"] = hand_position_to_delta(
+                    data["actions"],
+                    state,
+                    action_indices=delta_action_indices,
+                    state_indices=delta_state_indices,
+                )
             return result
 
     @dataclasses.dataclass(frozen=True)
@@ -46,7 +69,15 @@ def make_train_config(settings: dict[str, Any], *, smoke: bool = False) -> objec
         def __call__(self, data: dict) -> dict:
             from slai_mi.policies.openpi import hand_delta_to_position
 
-            return {"actions": hand_delta_to_position(data["actions"], data["state"], action_dim=action_dim)}
+            return {
+                "actions": hand_delta_to_position(
+                    data["actions"],
+                    data["state"],
+                    action_dim=action_dim,
+                    action_indices=delta_action_indices,
+                    state_indices=delta_state_indices,
+                )
+            }
 
     @dataclasses.dataclass(frozen=True)
     class DataFactory(config.DataConfigFactory):
@@ -60,11 +91,16 @@ def make_train_config(settings: dict[str, Any], *, smoke: bool = False) -> objec
 
     model = pi0_config.Pi0Config(
         pi05=True,
-        action_dim=32,
-        action_horizon=int(settings.get("action_horizon", 15)),
+        action_dim=model_action_dim,
+        action_horizon=int(settings["action_horizon"]),
         paligemma_variant="gemma_2b_lora",
         action_expert_variant="gemma_300m_lora",
     )
+    if state_dim > model_state_dim or action_dim > model_action_dim:
+        raise ValueError(
+            f"dataset state/action dimensions {(state_dim, action_dim)} exceed configured model "
+            f"padding {(model_state_dim, model_action_dim)}"
+        )
     return config.TrainConfig(
         name="slai_pi05_real_lora",
         exp_name=str(settings["experiment"]),
@@ -97,8 +133,20 @@ def make_train_config(settings: dict[str, Any], *, smoke: bool = False) -> objec
     )
 
 
+def add_openpi_source(root: str | Path) -> None:
+    checkout = Path(root).expanduser().resolve()
+    source_roots = (checkout / "src", checkout / "packages" / "openpi-client" / "src")
+    missing = [path for path in source_roots if not path.is_dir()]
+    if missing:
+        raise FileNotFoundError(f"OpenPI source directories are missing: {missing}")
+    for source_root in reversed(source_roots):
+        if str(source_root) not in sys.path:
+            sys.path.insert(0, str(source_root))
+
+
 def run_openpi(command: str, settings: dict[str, Any], *, smoke: bool, max_frames: int | None) -> None:
     root = Path(settings["openpi_root"]).expanduser().resolve()
+    add_openpi_source(root)
     script_name = "compute_norm_stats" if command == "norm" else "train"
     path = root / "scripts" / f"{script_name}.py"
     if not path.is_file():
