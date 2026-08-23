@@ -16,6 +16,7 @@ readonly NUM_GPUS="${NUM_GPUS:-1}"
 readonly STEPS="${STEPS:-10}"
 readonly BATCH_SIZE="${BATCH_SIZE:-8}"
 readonly RUN_TAG="${RUN_TAG:-$(date -u +%Y%m%dT%H%M%SZ)}"
+readonly EXPERIMENT="${EXPERIMENT:-wrist8d-${STEPS}step-$RUN_TAG}"
 readonly LOG_REL="logs/h100-wrist8d-$RUN_TAG.log"
 readonly RSYNC_SSH="ssh -T -o Compression=no -o IPQoS=throughput -o ServerAliveInterval=30"
 
@@ -121,7 +122,7 @@ nohup bash -lc '
     export PYTHONPATH="$REMOTE_PROJECT/src:$REMOTE_PROJECT/third_party/openpi/src:$REMOTE_PROJECT/third_party/openpi/packages/openpi-client/src"
     .venv-openpi/bin/python -m slai_mi.apps.pi05 convert --config "$CONFIG_REL" --execute
     .venv-openpi/bin/python -m slai_mi.apps.pi05 norm --config "$CONFIG_REL" --execute
-    PROJECT="$REMOTE_PROJECT" TRAIN_HOME="$REMOTE_BASE/.h100-home" CONFIG="$REMOTE_PROJECT/$CONFIG_REL" NUM_GPUS="$NUM_GPUS" STEPS="$STEPS" BATCH_SIZE="$BATCH_SIZE" bash deploy/h100_train_jax.sh
+    PROJECT="$REMOTE_PROJECT" TRAIN_HOME="$REMOTE_BASE/.h100-home" CONFIG="$REMOTE_PROJECT/$CONFIG_REL" NUM_GPUS="$NUM_GPUS" STEPS="$STEPS" BATCH_SIZE="$BATCH_SIZE" EXPERIMENT="$EXPERIMENT" bash deploy/h100_train_jax.sh
 ' </dev/null >"$LOG_REL" 2>&1 &
 pipeline_pid=\$!
 echo "pipeline_pid=\$pipeline_pid"
