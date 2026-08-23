@@ -20,8 +20,8 @@ training:
   experiment: block_into_box-wrist8d-20260823T213054
   project_name: slai-pi05-jax
   batch_size: 8
-  steps: 30000
-  save_interval: 5000
+  steps: 10
+  save_interval: 10
   seed: 42
   base_checkpoint: gs://openpi-assets/checkpoints/pi05_base/params
   base_checkpoint_dir: data/models/pi05-base
