@@ -1,0 +1,17 @@
+schema_version: 1
+target: offline
+backend: null
+checkpoint: outputs/pi05/jax/slai_pi05_real_lora/wrist8d-213054-smoke10-swanlab-20260823/9
+model_python: third_party/openpi/.venv/bin/python
+device: cuda
+input_schema: configs/input_schemas/ur5e_wrist_8dof.yaml
+dataset:
+  repo_id: block_into_box-wrist8d-20260823T213054_v21
+  root: data/training/pi05/block_into_box-wrist8d-20260823T213054_v21
+  physical_v21_root: data/training/pi05/block_into_box-wrist8d-20260823T213054_v21
+  video_backend: pyav
+  frame_index: 0
+deployment:
+  task_prompt: Pick up the block and place it into the box.
+  max_steps: 1
+  inference_timeout_s: 30.0
