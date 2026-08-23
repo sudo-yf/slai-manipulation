@@ -8,7 +8,7 @@ readonly REMOTE_GID="${REMOTE_GID:-10100}"
 readonly REMOTE_BASE="${REMOTE_BASE:-/mnt/afs/250010074/yifan/slai-manipulation}"
 readonly REMOTE_PROJECT="${REMOTE_PROJECT:-/mnt/afs/250010074/yifan/slai-manipulation-h100-wrist8d}"
 readonly REMOTE_HOME="${REMOTE_HOME:-/mnt/afs/250010074/yifan/.h100-home-wrist8d}"
-readonly DATASET_NAME="${DATASET_NAME:-block_into_box-wrist8d-20260823T211337}"
+readonly DATASET_NAME="${DATASET_NAME:-block_into_box-wrist8d-20260823T213054}"
 readonly LOCAL_DATASET="$LOCAL_PROJECT/data/lerobot/$DATASET_NAME"
 readonly REMOTE_DATASET="$REMOTE_PROJECT/data/lerobot/$DATASET_NAME"
 readonly CONFIG_REL="${CONFIG_REL:-configs/pi05_wrist_8dof_h100_jax.yaml}"
@@ -17,6 +17,7 @@ readonly STEPS="${STEPS:-30000}"
 readonly BATCH_SIZE="${BATCH_SIZE:-8}"
 readonly RUN_TAG="${RUN_TAG:-$(date -u +%Y%m%dT%H%M%SZ)}"
 readonly LOG_REL="logs/h100-wrist8d-$RUN_TAG.log"
+readonly RSYNC_SSH="ssh -T -o Compression=no -o IPQoS=throughput -o ServerAliveInterval=30"
 
 remote_user() {
     ssh "$H100_HOST" setpriv \
@@ -29,10 +30,10 @@ remote_user() {
     exit 1
 }
 
-git -C "$LOCAL_PROJECT" diff --quiet
-git -C "$LOCAL_PROJECT" diff --cached --quiet
-[[ -z "$(git -C "$LOCAL_PROJECT" status --short --untracked-files=normal)" ]] || {
-    echo "Local repository must be clean before H100 deployment" >&2
+git -C "$LOCAL_PROJECT" diff --quiet -- "$CONFIG_REL" deploy/h100_train_jax.sh deploy/h100_wrist8d_pipeline.sh
+git -C "$LOCAL_PROJECT" diff --cached --quiet -- "$CONFIG_REL" deploy/h100_train_jax.sh deploy/h100_wrist8d_pipeline.sh
+[[ -z "$(git -C "$LOCAL_PROJECT" ls-files --others --exclude-standard -- "$CONFIG_REL" deploy/h100_train_jax.sh deploy/h100_wrist8d_pipeline.sh)" ]] || {
+    echo "Deployment files must be committed before H100 deployment" >&2
     exit 1
 }
 
@@ -62,11 +63,11 @@ mkdir -p "$REMOTE_PROJECT/data/lerobot" "$REMOTE_PROJECT/logs"
 mkdir -p "$REMOTE_PROJECT/.h100-home"
 EOF
 
-rsync --archive --partial --info=progress2 \
+rsync --archive --whole-file --partial --info=progress2 -e "$RSYNC_SSH" \
     --rsync-path="setpriv --reuid=$REMOTE_UID --regid=$REMOTE_GID --clear-groups rsync" \
     "$LOCAL_DATASET/" "$H100_HOST:$REMOTE_DATASET/"
 
-if [[ -n "$(rsync --archive --checksum --dry-run --itemize-changes \
+if [[ -n "$(rsync --archive --whole-file --checksum --dry-run --itemize-changes -e "$RSYNC_SSH" \
     --rsync-path="setpriv --reuid=$REMOTE_UID --regid=$REMOTE_GID --clear-groups rsync" \
     "$LOCAL_DATASET/" "$H100_HOST:$REMOTE_DATASET/")" ]]; then
     echo "Remote dataset verification failed: $REMOTE_DATASET" >&2

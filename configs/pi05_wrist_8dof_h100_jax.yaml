@@ -5,19 +5,19 @@ lerobot_v21_commit: 0cf864870cf29f4738d3ade893e6fd13fbd7cdb5
 
 dataset:
   input_schema: configs/input_schemas/ur5e_wrist_8dof.yaml
-  source: data/lerobot/block_into_box-wrist8d-20260823T211337
-  converted: data/training/pi05/block_into_box-wrist8d-20260823T211337_v21
-  repo_id: block_into_box-wrist8d-20260823T211337_v21
-  native_repo_id: local/block_into_box-wrist8d-20260823T211337-pi05
-  native_v21: data/training/pi05/block_into_box-wrist8d-20260823T211337_native_v21
-  native_v30: data/training/pi05/block_into_box-wrist8d-20260823T211337_native_v30
+  source: data/lerobot/block_into_box-wrist8d-20260823T213054
+  converted: data/training/pi05/block_into_box-wrist8d-20260823T213054_v21
+  repo_id: block_into_box-wrist8d-20260823T213054_v21
+  native_repo_id: local/block_into_box-wrist8d-20260823T213054-pi05
+  native_v21: data/training/pi05/block_into_box-wrist8d-20260823T213054_native_v21
+  native_v30: data/training/pi05/block_into_box-wrist8d-20260823T213054_native_v30
 
 policy:
   task_prompt: Pick up the block and place it into the box.
 
 training:
   backend: openpi_jax
-  experiment: block_into_box-wrist8d-20260823T211337
+  experiment: block_into_box-wrist8d-20260823T213054
   project_name: slai-pi05-jax
   batch_size: 8
   steps: 30000
@@ -28,13 +28,13 @@ training:
   openpi_root: third_party/openpi
   lerobot_v21_python: .venv-openpi/bin/python
   lerobot_v3_python: .venv-lerobot-v3/bin/python
-  assets_dir: data/normalization/pi05/block_into_box-wrist8d-20260823T211337
+  assets_dir: data/normalization/pi05/block_into_box-wrist8d-20260823T213054
   checkpoints_dir: outputs/pi05/jax
   lerobot_train: .venv-lerobot-v3/bin/lerobot-train
-  generated_train_config: outputs/pi05/block_into_box-wrist8d-20260823T211337/train.yaml
-  training_output_dir: outputs/pi05/block_into_box-wrist8d-20260823T211337/full
-  smoke_output_dir: outputs/pi05/block_into_box-wrist8d-20260823T211337/smoke
-  output_repo_id: local/block_into_box-wrist8d-20260823T211337-policy
+  generated_train_config: outputs/pi05/block_into_box-wrist8d-20260823T213054/train.yaml
+  training_output_dir: outputs/pi05/block_into_box-wrist8d-20260823T213054/full
+  smoke_output_dir: outputs/pi05/block_into_box-wrist8d-20260823T213054/smoke
+  output_repo_id: local/block_into_box-wrist8d-20260823T213054-policy
   lora_rank: 4
   fsdp_devices: 1
   swanlab_enabled: true
