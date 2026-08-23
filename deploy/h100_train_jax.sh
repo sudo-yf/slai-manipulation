@@ -27,6 +27,7 @@ export JAX_COMPILATION_CACHE_DIR="$PROJECT/.cache/jax"
 export PYTHONPATH="$PROJECT/src:$PROJECT/third_party/openpi/src:$PROJECT/third_party/openpi/packages/openpi-client/src"
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 export SLAI_PI05_REEXEC=1
+export WANDB_MODE="${WANDB_MODE:-offline}"
 
 cd "$PROJECT"
 actual_gpus="$($ENVIRONMENT/bin/python -c 'import jax; print(jax.device_count())')"

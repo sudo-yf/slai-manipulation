@@ -37,4 +37,4 @@ training:
   output_repo_id: local/block_into_box-wrist8d-20260823T213054-policy
   lora_rank: 4
   fsdp_devices: 1
-  swanlab_enabled: true
+  swanlab_enabled: false
