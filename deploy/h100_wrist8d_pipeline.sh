@@ -114,7 +114,7 @@ nohup bash -lc '
     set -euo pipefail
     cd "$REMOTE_PROJECT"
     export HOME="$REMOTE_PROJECT/.h100-home"
-    export OPENPI_DATA_HOME="$REMOTE_PROJECT/.cache/openpi"
+    export OPENPI_DATA_HOME="$REMOTE_BASE/.cache/openpi"
     export HF_HOME="$REMOTE_PROJECT/.cache/huggingface"
     export XDG_CACHE_HOME="$REMOTE_PROJECT/.cache"
     export JAX_COMPILATION_CACHE_DIR="$REMOTE_PROJECT/.cache/jax"

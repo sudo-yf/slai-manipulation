@@ -20,7 +20,7 @@ readonly EXPERIMENT="${EXPERIMENT:-${NUM_GPUS}gpu-${STEPS}step}"
 }
 
 export HOME="$PROJECT/.h100-home"
-export OPENPI_DATA_HOME="$PROJECT/.cache/openpi"
+export OPENPI_DATA_HOME="${OPENPI_DATA_HOME:-$PROJECT/.cache/openpi}"
 export HF_HOME="$PROJECT/.cache/huggingface"
 export XDG_CACHE_HOME="$PROJECT/.cache"
 export JAX_COMPILATION_CACHE_DIR="$PROJECT/.cache/jax"
