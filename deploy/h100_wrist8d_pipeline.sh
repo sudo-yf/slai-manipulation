@@ -63,9 +63,38 @@ mkdir -p "$REMOTE_PROJECT/data/lerobot" "$REMOTE_PROJECT/logs"
 mkdir -p "$REMOTE_PROJECT/.h100-home"
 EOF
 
-rsync --archive --whole-file --partial --info=progress2 -e "$RSYNC_SSH" \
-    --rsync-path="setpriv --reuid=$REMOTE_UID --regid=$REMOTE_GID --clear-groups rsync" \
+rsync_options=(
+    --archive
+    --whole-file
+    --partial
+    --info=progress2
+    -e "$RSYNC_SSH"
+    --rsync-path="setpriv --reuid=$REMOTE_UID --regid=$REMOTE_GID --clear-groups rsync"
+)
+rsync "${rsync_options[@]}" --exclude=/videos/ \
     "$LOCAL_DATASET/" "$H100_HOST:$REMOTE_DATASET/"
+
+remote_user <<EOF
+set -euo pipefail
+mkdir -p "$REMOTE_DATASET/videos"
+EOF
+
+transfer_pids=()
+for camera_dir in "$LOCAL_DATASET"/videos/*; do
+    [[ -d "$camera_dir" ]] || continue
+    camera_name="$(basename "$camera_dir")"
+    rsync "${rsync_options[@]}" \
+        "$camera_dir/" "$H100_HOST:$REMOTE_DATASET/videos/$camera_name/" &
+    transfer_pids+=("$!")
+done
+transfer_failed=0
+for transfer_pid in "${transfer_pids[@]}"; do
+    wait "$transfer_pid" || transfer_failed=1
+done
+[[ "$transfer_failed" == 0 ]] || {
+    echo "One or more parallel video transfers failed" >&2
+    exit 1
+}
 
 if [[ -n "$(rsync --archive --whole-file --checksum --dry-run --itemize-changes -e "$RSYNC_SSH" \
     --rsync-path="setpriv --reuid=$REMOTE_UID --regid=$REMOTE_GID --clear-groups rsync" \
