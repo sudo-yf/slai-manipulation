@@ -12,6 +12,8 @@ from types import FrameType
 from typing import Any, Protocol, Self
 
 from slai_mi.collection.operator_control import EpisodeAction, SpaceMouseEpisodeControls
+from slai_mi.devices.spacemouse.buttons import Button
+from slai_mi.devices.spacemouse.gestures import RepeatedChordGesture
 from slai_mi.input_schema import enabled_cameras, load_input_schema
 
 HOME_TIMEOUT_S = 30.0
@@ -195,6 +197,7 @@ class RealCollectionWorkflow:
                     CollectionDashboard(
                         dict(self.hardware),
                         instruction,
+                        task_id=str(self.task.get("task", {}).get("id") or "") or None,
                         host=self.dashboard_host,
                         port=self.dashboard_port,
                         open_browser=self.dashboard_open_browser,
@@ -236,6 +239,12 @@ class RealCollectionWorkflow:
             if dashboard is not None and hasattr(recorder, "on_frame"):
                 recorder.on_frame = dashboard.provider.record_frame
             controls = SpaceMouseEpisodeControls()
+            cancel_gesture = RepeatedChordGesture(
+                (int(Button.MENU), int(Button.FIT)),
+                repeats=3,
+                timeout_s=5.0,
+                require_initial_release=True,
+            )
             saved = 0
             attempts = 0
             active_stop: threading.Event | None = None
@@ -350,6 +359,17 @@ class RealCollectionWorkflow:
                     motion, buttons = mouse.state()
                     if dashboard is not None:
                         dashboard.provider.observe_spacemouse(motion, buttons)
+                    if bool(any(abs(float(value)) > 0.0 for value in motion)):
+                        cancel_gesture.reset()
+                    elif cancel_gesture.update(buttons, time.monotonic()):
+                        finalize_from_lock()
+                        if dashboard is not None:
+                            dashboard.provider.event(
+                                "Menu + Fit 三次：退出数采并恢复待机网页",
+                                level="success",
+                                code="physical_collection_exit",
+                            )
+                        break
                     home = mouse.home_status() if supports_home else {"at_home": True, "detail": ""}
                     if homing:
                         homing_action = controls.update(buttons)

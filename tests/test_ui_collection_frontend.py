@@ -52,9 +52,14 @@ def test_dashboard_serves_status_and_static_page() -> None:
         page = response.read().decode("utf-8")
         assert "SLAI-teleop" in page
         assert "Input Map" in page
-        assert "System Events Log" in page
+        assert "Dataset Overview" in page
         assert 'id="spacemouse-container"' in page
         assert 'class="camera-grid"' in page
+        assert 'class="temperature-status"' in page
+        assert "WujiHand</span><strong>--</strong>" in page
+        assert 'id="collection-task"' in page
+        assert 'class="dataset-history"' in page
+        assert 'data-collection-active="false"' in page
 
         connection.request("GET", "/styles.css")
         response = connection.getresponse()
@@ -74,6 +79,9 @@ def test_dashboard_serves_status_and_static_page() -> None:
         assert 'fetch("/api/status"' in script
         assert "RTCPeerConnection" in script
         assert "/whep" in script
+        assert "function renderTemperature(temperature)" in script
+        assert 'fetch("/api/collection-history"' in script
+        assert 'eventPanel.dataset.collectionActive = String(collectionActive)' in script
         assert "navigator.hid" not in script
         assert "__STITCH_CONFIG__" not in script
 
@@ -85,6 +93,11 @@ def test_dashboard_serves_status_and_static_page() -> None:
         assert 'data-button="menu"' in input_map
         assert 'data-button="rotation_lock"' in input_map
         assert 'data-pressed="true"' in input_map
+        assert 'id="key-t" data-button="roll_cw"' in input_map
+        assert 'id="key-front" data-button="t"' in input_map
+        assert 'id="key-roll" data-button="rotation_lock"' in input_map
+        assert 'id="key-rear" data-button="front"' in input_map
+        assert 'id="key-lock" data-button="rear"' in input_map
 
         connection.request("GET", "/api/cameras")
         response = connection.getresponse()
@@ -104,6 +117,13 @@ def test_dashboard_serves_status_and_static_page() -> None:
         devices = json.loads(response.read())
         assert response.status == 200
         assert set(devices["devices"]) == {"ur5", "wuji", "wrist"}
+
+        connection.request("GET", "/api/collection-history")
+        response = connection.getresponse()
+        history = json.loads(response.read())
+        assert response.status == 200
+        assert history["dataset_root"].endswith("/data/lerobot")
+        assert isinstance(history["sessions"], list)
     finally:
         server.shutdown()
         server.server_close()

@@ -191,6 +191,62 @@ def test_collection_saves_episode_and_finalizes_all_resources() -> None:
     assert events[-1] == "ur5-close"
 
 
+def test_three_menu_fit_cycles_exit_continuous_collection_without_an_episode() -> None:
+    events: list[str] = []
+    chord = {0: True, 1: True}
+
+    class Mouse:
+        def __init__(self):
+            # The held startup chord is ignored until both buttons are released.
+            self.states = [chord, {}, chord, {}, chord, {}, chord]
+
+        def state(self):
+            return (), self.states.pop(0)
+
+    @contextmanager
+    def resource(value=None):
+        yield object() if value is None else value
+
+    class Dataset:
+        def save_episode(self):
+            raise AssertionError("exit gesture must not save an episode")
+
+        def clear_episode_buffer(self):
+            events.append("clear")
+
+        def finalize(self):
+            events.append("finalize")
+
+    class Synchronizer:
+        def read(self, timeout_s=1.0):
+            return None
+
+    class Recorder:
+        def record(self, _stop):
+            raise AssertionError("exit gesture must not start recording")
+
+    dependencies = CollectionDependencies(
+        ur5_factory=lambda _config: resource(),
+        wuji_factory=lambda _config: resource(),
+        spacemouse_factory=lambda _config: resource(Mouse()),
+        cameras_factory=lambda _config: resource(),
+        dataset_factory=lambda _dataset, _task: Dataset(),
+        synchronizer_factory=lambda _sources, _dataset: Synchronizer(),
+        recorder_factory=lambda *_args: Recorder(),
+        sleep=lambda _seconds: None,
+    )
+    workflow = RealCollectionWorkflow(
+        hardware_config(),
+        {},
+        {"task": {"instruction": "task"}},
+        dependencies,
+        episode_limit=None,
+    )
+
+    assert workflow.run() == 0
+    assert events == ["clear", "finalize"]
+
+
 def test_collection_named_resources_exclude_wuji() -> None:
     events: list[str] = []
 

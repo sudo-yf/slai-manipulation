@@ -62,7 +62,7 @@ def test_wrist_collection_frame_is_exactly_8d_and_pi05_view_is_11d() -> None:
     assert len(select_vector(frame["action"], schema["pi05"]["action"], "action")) == 8
 
 
-def test_wrist_controller_automatically_starts_master_stream(monkeypatch) -> None:
+def test_wrist_controller_can_park_then_rezero_master_and_resume(monkeypatch) -> None:
     commands: list[str] = []
     targets: list[tuple[float, float]] = []
 
@@ -182,13 +182,28 @@ def test_wrist_controller_automatically_starts_master_stream(monkeypatch) -> Non
     )
     controller = WristMasterSlaveController(Path("unused.yaml"))
     with controller:
+        assert targets == []
+        assert controller.state().actual_q.shape == (2,)
+
+        controller.request_resume()
         deadline = time.monotonic() + 1.0
         while not targets and time.monotonic() < deadline:
             time.sleep(0.005)
         assert targets == [(2.0, 1.0)]
-        assert controller.state().actual_q.shape == (2,)
 
-    assert commands[:3] == ["STOP", "SET_PERIOD 10", "START"]
+        controller.request_park()
+        deadline = time.monotonic() + 1.0
+        while commands.count("STOP") < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert commands.count("STOP") == 2
+
+        controller.request_resume()
+        deadline = time.monotonic() + 1.0
+        while commands.count("START") < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert commands.count("START") == 2
+
+    assert commands[:2] == ["STOP", "SET_PERIOD 10"]
 
 
 def test_collection_dashboard_accepts_wrist_group_without_wuji() -> None:

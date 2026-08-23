@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -222,7 +223,59 @@ def test_wrist_strategy_builds_ur5_and_wrist_workers_without_wuji(monkeypatch) -
         lambda *_args, **_kwargs: object(),
     )
     wrist_factory = (dependencies.runtime_factories or {})["wrist-teleop"]
-    assert isinstance(wrist_factory(hardware, None, None), NativeWristTeleopLoop)
+    wrist_loop = wrist_factory(hardware, "shared-mouse", None)
+    assert isinstance(wrist_loop, NativeWristTeleopLoop)
+    assert wrist_loop.mouse == "shared-mouse"
+
+
+def test_wrist_teleop_parks_on_home_or_fit_and_resumes_on_menu(monkeypatch) -> None:
+    hardware = yaml.safe_load(Path("configs/hardware.yaml").read_text(encoding="utf-8"))
+    stop = threading.Event()
+
+    class Controller:
+        def __init__(self, *_args, **_kwargs):
+            self.park_requests = 0
+            self.resume_requests = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def request_park(self):
+            self.park_requests += 1
+
+        def request_resume(self):
+            self.resume_requests += 1
+
+        def check(self):
+            return None
+
+    class Mouse:
+        def __init__(self):
+            self.states = [
+                {int(Button.HOME): True},
+                {int(Button.HOME): True},
+                {},
+                {int(Button.FIT): True},
+                {},
+                {int(Button.FIT): True, int(Button.MENU): True},
+                {},
+                {int(Button.MENU): True},
+            ]
+
+        def state(self):
+            buttons = self.states.pop(0)
+            if not self.states:
+                stop.set()
+            return np.zeros(6), buttons
+
+    monkeypatch.setattr("slai_mi.site_adapter.WristMasterSlaveController", Controller)
+    loop = NativeWristTeleopLoop(hardware, Mouse())
+    loop.run(stop)
+    assert loop.controller.park_requests == 2
+    assert loop.controller.resume_requests == 1
 
 
 def test_wrist_teleop_writes_data_outside_vendor_symlink() -> None:

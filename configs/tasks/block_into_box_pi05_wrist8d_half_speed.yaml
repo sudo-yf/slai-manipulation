@@ -1,0 +1,11 @@
+schema_version: 1
+task:
+  id: block_into_box_pi05_wrist8d_half_speed
+  instruction: Pick up the block and place it into the box.
+dataset_ref: ../dataset.yaml
+state_schema: real_v1
+control_profile_ref: ../controls/pi05_wrist8d_half_speed.yaml
+start_pose_ref: ../poses/tasks/block_into_box_start.yaml
+hand_presets:
+  open: ../poses/tasks/block_into_box_open.yaml
+  grasp: ../poses/tasks/block_into_box_grasp.yaml

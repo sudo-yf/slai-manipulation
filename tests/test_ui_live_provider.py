@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
@@ -13,6 +14,7 @@ import numpy as np
 from slai_mi.collection.vla_recorder import SourceSample, SynchronizedInputs
 from slai_mi.ui.collection_dashboard import CollectionDashboardProvider
 from slai_mi.ui.collection_frontend import DashboardRuntime, build_handler
+from slai_mi.ui.live_provider import LiveStatusProvider
 
 
 class FakeStatusProvider:
@@ -62,6 +64,38 @@ class FakeStatusProvider:
         if key != "camera-wrist-key":
             raise KeyError(key)
         return b"\xff\xd8fake-jpeg\xff\xd9"
+
+
+def test_physical_gesture_requests_wrist_collection_service(monkeypatch) -> None:
+    commands = []
+
+    def run(command, *, check):
+        commands.append((command, check))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    provider = LiveStatusProvider.__new__(LiveStatusProvider)
+    provider.collection_service = "slai-wrist-collection.service"
+    provider._lock = threading.Lock()
+    provider._collection_start_requested = False
+    provider._collection_start_error = None
+    provider._collection_gesture = SimpleNamespace(reset=lambda: None)
+
+    provider._request_collection_start()
+
+    assert commands == [
+        (
+            [
+                "systemctl",
+                "--user",
+                "start",
+                "--no-block",
+                "slai-wrist-collection.service",
+            ],
+            True,
+        )
+    ]
+    assert provider._collection_start_requested
 
 
 def test_runtime_lifecycle_is_idempotent() -> None:

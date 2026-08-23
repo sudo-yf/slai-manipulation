@@ -1,0 +1,30 @@
+schema_version: 1
+profile: pi05_wrist8d_half_speed
+units:
+  translation_speed: m/s
+  rotation_speed: rad/s
+motion:
+  control_hz: 15
+  acceleration: 0.25
+  wrist_3_jog_speed: 0.30
+  home_joint_speed: 0.10
+  max_offset_mm: 20.0
+  max_rotation_deg: 2.0
+  translation_speed: 0.125
+  rotation_speed: 0.30
+  precision_translation_speed: 0.125
+  precision_rotation_speed: 0.30
+  deadzone: 0.12
+hand:
+  command_hz: 15
+  grasp_speed: 0.10
+  grasp_acceleration: 0.20
+  release_speed: 0.10
+  release_acceleration: 0.20
+  retarget_speed: 0.10
+  retarget_acceleration: 0.20
+  lost_hand_return_delay: 0.20
+  one_euro_min_cutoff: 1.0
+  one_euro_beta: 0.0
+bindings:
+  esc: stop_and_disarm

@@ -22,3 +22,9 @@ def test_rotation_lock_finalizes_on_rising_edge() -> None:
     assert controls.update({26: True}) is EpisodeAction.FINALIZE
     assert controls.update({26: True}) is None
     assert controls.update({}) is None
+
+
+def test_menu_fit_chord_is_reserved_for_collection_service_control() -> None:
+    controls = SpaceMouseEpisodeControls()
+    assert controls.update({0: True, 1: True}) is None
+    assert not controls.recording

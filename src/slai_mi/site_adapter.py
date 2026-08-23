@@ -464,8 +464,9 @@ class Wrist2WristTeleopLoop:
 class NativeWristTeleopLoop:
     """Run the same automatic-zero wrist adapter used by formal collection."""
 
-    def __init__(self, hardware: dict[str, Any]) -> None:
+    def __init__(self, hardware: dict[str, Any], mouse: Any) -> None:
         wrist = _section(hardware, "wrist_sensor")
+        self.mouse = mouse
         self.controller = WristMasterSlaveController(
             PROJECT_ROOT / str(wrist["config"]),
             teleop_port=str(wrist.get("teleop_port", "auto")),
@@ -474,9 +475,31 @@ class NativeWristTeleopLoop:
         )
 
     def run(self, stop_event: threading.Event) -> None:
+        previous: dict[int, bool] = {}
         with self.controller:
-            while not stop_event.wait(0.05):
+            while not stop_event.wait(0.01):
+                _motion, buttons = self.mouse.state()
+                action, previous = _wrist_gate_action(buttons, previous)
+                if action == "park":
+                    self.controller.request_park()
+                elif action == "resume":
+                    self.controller.request_resume()
                 self.controller.check()
+
+
+def _wrist_gate_action(
+    buttons: dict[int, bool], previous: dict[int, bool]
+) -> tuple[str | None, dict[int, bool]]:
+    tracked = (int(Button.HOME), int(Button.FIT), int(Button.MENU))
+    current = {button: bool(buttons.get(button, False)) for button in tracked}
+    rising = {button: current[button] and not previous.get(button, False) for button in tracked}
+    if current[int(Button.FIT)] and current[int(Button.MENU)]:
+        return None, current
+    if rising[int(Button.HOME)] or rising[int(Button.FIT)]:
+        return "park", current
+    if rising[int(Button.MENU)]:
+        return "resume", current
+    return None, current
 
 
 class RealPolicyBridge:
@@ -1037,6 +1060,7 @@ class ControlledUR5SpaceMouse:
         self._first_command = threading.Event()
         self._home_requested = threading.Event()
         self._home_stable_since: float | None = None
+        self._wrist_buttons: dict[int, bool] = {}
         self._failure: BaseException | None = None
         self._thread: threading.Thread | None = None
 
@@ -1075,6 +1099,13 @@ class ControlledUR5SpaceMouse:
             started = time.monotonic()
             self.wrist.check()
             motion, buttons = self.mouse.state()
+            wrist_action, self._wrist_buttons = _wrist_gate_action(
+                buttons, self._wrist_buttons
+            )
+            if wrist_action == "park":
+                self.wrist.request_park()
+            elif wrist_action == "resume":
+                self.wrist.request_resume()
             with self._latest_lock:
                 self.latest = (motion.copy(), buttons.copy())
             start_pose, twist, target_qd, joints = _apply_legacy_ur5_command(
@@ -1346,7 +1377,7 @@ def make_teleop(hardware: dict[str, Any], task: dict[str, Any]) -> TeleopDepende
             preflight=_wrist_teleop_preflight,
             runtime_factories={
                 "ur5-teleop": lambda _config, mouse, _stop: UR5TeleopLoop(session, mouse),
-                "wrist-teleop": lambda config, _mouse, _stop: NativeWristTeleopLoop(config),
+                "wrist-teleop": lambda config, mouse, _stop: NativeWristTeleopLoop(config, mouse),
             },
             required_devices=("ur5", "wrist_sensor", "spacemouse"),
         )

@@ -3,6 +3,7 @@ target: offline
 backend: null
 checkpoint: outputs/pi05/jax/slai_pi05_real_lora/wrist8d-213054-smoke10-swanlab-20260823/9
 model_python: third_party/openpi/.venv/bin/python
+training_config: configs/pi05_wrist_8dof_h100_jax.yaml
 device: cuda
 input_schema: configs/input_schemas/ur5e_wrist_8dof.yaml
 dataset:
@@ -13,5 +14,5 @@ dataset:
   frame_index: 0
 deployment:
   task_prompt: Pick up the block and place it into the box.
-  max_steps: 1
+  max_steps: 15
   inference_timeout_s: 30.0

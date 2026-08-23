@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -242,8 +243,11 @@ class ConfiguredDatasetWriter:
 
     def finalize(self) -> None:
         self._dataset.finalize()
-        if int(self._dataset.meta.total_episodes) > 0:
-            self.validation_report = self.contract.validate_root(self._root)
+        if int(self._dataset.meta.total_episodes) == 0:
+            if self._root.exists():
+                shutil.rmtree(self._root)
+            return
+        self.validation_report = self.contract.validate_root(self._root)
 
 
 def create_configured_dataset(

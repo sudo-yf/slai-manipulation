@@ -90,6 +90,13 @@ uv run slai-teleop-real --strategy ur5e_wrist_8dof_teleop \
 
 腕部组合运行时，WujiHand 和采集相机被显式关闭。供应商目录 `third_party/02_Python_Client_CLI` 只读使用，腕部临时 episode 写入主项目的 `data/wrist-teleop`。
 
+4090 的待机网页服务启用 `--spacemouse-collection-launch` 后，可以直接用实体
+SpaceMouse 进入腕部正式数采：保持中央帽不动，同时按下 `Menu + Fit`，完全松开，
+再重复，共完成 3 次；3 次需在 5 秒内完成。待机服务随后释放三台相机、SpaceMouse
+和 8765 端口，再启动 `ur5e_wrist_8dof_collection` 连续采集。数采运行后，再按同样
+方式完成 3 次，会结束数采、丢弃尚未保存的当前段，并自动恢复待机网页。
+这条数采链路在启动和 Episode 收尾时的自动回零都会同时包含 UR5 和双轴腕部。
+
 腕部正式采集使用：
 
 ```bash

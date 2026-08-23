@@ -94,6 +94,10 @@ class WristMasterSlaveController:
         self._stop = threading.Event()
         self._home_requested = threading.Event()
         self._home_running = threading.Event()
+        self._park_requested = threading.Event()
+        self._park_running = threading.Event()
+        self._resume_requested = threading.Event()
+        self._parked = False
         self._thread: threading.Thread | None = None
         self._failure: BaseException | None = None
         self._teleop: Any | None = None
@@ -139,7 +143,8 @@ class WristMasterSlaveController:
                 timeout_s=2.0,
             )
             initial = controller.prepare(auto_home_zero=True, force_home_zero=False)
-            self._initialize_master_stream(initial)
+            self._store_state(initial)
+            self._parked = True
         except BaseException:
             self._close_serials(return_zero=False)
             raise
@@ -193,13 +198,32 @@ class WristMasterSlaveController:
         command_period = 1.0 / float(self._config.stream.command_hz)
         state_period = 1.0 / float(self._config.stream.state_hz)
         while not self._stop.is_set():
+            if self._park_requested.is_set():
+                self._park_running.set()
+                self._teleop.command("STOP", {"STOP"}, timeout_s=2.0)
+                output = self._controller.prepare(auto_home_zero=True, force_home_zero=False)
+                self._store_state(output)
+                self._parked = True
+                self._park_requested.clear()
+                self._park_running.clear()
+                continue
+            if self._resume_requested.is_set():
+                if self._parked:
+                    self._initialize_master_stream(self._controller.read_state())
+                    self._parked = False
+                self._resume_requested.clear()
+                continue
             if self._home_requested.is_set():
                 self._home_running.set()
                 self._teleop.command("STOP", {"STOP"}, timeout_s=2.0)
                 output = self._controller.prepare(auto_home_zero=True, force_home_zero=False)
-                self._initialize_master_stream(output)
+                self._store_state(output)
+                self._parked = True
                 self._home_requested.clear()
                 self._home_running.clear()
+                continue
+            if self._parked:
+                self._stop.wait(0.01)
                 continue
             line = self._teleop.read_line(0.02)
             if line is None:
@@ -259,9 +283,24 @@ class WristMasterSlaveController:
         self.check()
         self._home_requested.set()
 
+    def request_park(self) -> None:
+        """Return FE/RU to zero and ignore master motion until resumed."""
+        self.check()
+        self._park_requested.set()
+
+    def request_resume(self) -> None:
+        """Use the current master pose as zero and resume wrist following."""
+        self.check()
+        self._resume_requested.set()
+
     def home_status(self) -> dict[str, object]:
         self.check()
-        if self._home_requested.is_set() or self._home_running.is_set():
+        if (
+            self._home_requested.is_set()
+            or self._home_running.is_set()
+            or self._park_requested.is_set()
+            or self._park_running.is_set()
+        ):
             return {"at_home": False, "detail": "wrist returning to zero"}
         state = self.state()
         error = float(np.max(np.abs(state.actual_q)))
