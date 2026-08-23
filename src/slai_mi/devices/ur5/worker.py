@@ -80,6 +80,18 @@ class VendorRTDE:
             time.sleep(0.05)
         raise RuntimeError("UR5 RTDE control script did not start after reupload")
 
+    def _ensure_control(self) -> None:
+        if self.control is None:
+            self._start_control()
+            return
+        if self.control.isProgramRunning():
+            return
+        stale, self.control = self.control, None
+        try:
+            stale.disconnect()
+        finally:
+            self._start_control()
+
     def state(self) -> dict[str, Any]:
         if self.receiver.isEmergencyStopped():
             raise RuntimeError("UR5 emergency stop is active")
@@ -94,11 +106,8 @@ class VendorRTDE:
         }
 
     def speed(self, twist: list[float], acceleration: float, duration_s: float) -> None:
-        if self.control is None:
-            self._start_control()
+        self._ensure_control()
         assert self.control is not None
-        if not self.control.isProgramRunning():
-            raise RuntimeError("UR5 RTDE control script is not running")
         if not self.control.isPoseWithinSafetyLimits(self.receiver.getActualTCPPose()):
             raise RuntimeError("current UR5 TCP pose is outside configured safety limits")
         if not self.control.speedL(twist, acceleration, duration_s):
@@ -106,28 +115,21 @@ class VendorRTDE:
 
     def prepare(self, tcp_pose: list[float]) -> None:
         """Complete the legacy RTDE control preflight without sending motion."""
-        if self.control is None:
-            self._start_control()
+        self._ensure_control()
         assert self.control is not None
-        if not self.control.isProgramRunning():
-            raise RuntimeError("UR5 RTDE control script is not running")
         if not self.control.isPoseWithinSafetyLimits(tcp_pose):
             raise RuntimeError("current UR5 TCP pose is outside configured safety limits")
 
     def speed_joint(
         self, velocity: list[float], acceleration: float, duration_s: float
     ) -> None:
-        if self.control is None:
-            self._start_control()
+        self._ensure_control()
         assert self.control is not None
-        if not self.control.isProgramRunning():
-            raise RuntimeError("UR5 RTDE control script is not running")
         if not self.control.speedJ(velocity, acceleration, duration_s):
             raise RuntimeError("UR5 speedJ command returned false")
 
     def joints_safe(self, joints: list[float]) -> bool:
-        if self.control is None:
-            self._start_control()
+        self._ensure_control()
         assert self.control is not None
         return bool(self.control.isJointsWithinSafetyLimits(joints))
 

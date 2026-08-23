@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -104,7 +105,7 @@ def make_train_config(settings: dict[str, Any], *, smoke: bool = False) -> objec
     return config.TrainConfig(
         name="slai_pi05_real_lora",
         exp_name=str(settings["experiment"]),
-        project_name="slai-pi05-real-vla",
+        project_name=str(settings.get("project_name", "slai-pi05-real-vla")),
         model=model,
         data=DataFactory(
             repo_id=str(settings["repo_id"]),
@@ -123,6 +124,7 @@ def make_train_config(settings: dict[str, Any], *, smoke: bool = False) -> objec
         keep_period=1 if smoke else int(settings.get("save_interval", 5000)),
         overwrite=smoke,
         wandb_enabled=not smoke,
+        fsdp_devices=int(settings.get("fsdp_devices", 1)),
         # The transform classes are defined per configuration and are not
         # pickleable under OpenPI's spawn multiprocessing context. Keep the
         # loader single-process; this also makes norm-stat generation reliable
@@ -145,6 +147,7 @@ def add_openpi_source(root: str | Path) -> None:
 
 
 def run_openpi(command: str, settings: dict[str, Any], *, smoke: bool, max_frames: int | None) -> None:
+    os.environ["HF_LEROBOT_HOME"] = str(Path(settings["converted"]).parent)
     root = Path(settings["openpi_root"]).expanduser().resolve()
     add_openpi_source(root)
     script_name = "compute_norm_stats" if command == "norm" else "train"
@@ -152,9 +155,20 @@ def run_openpi(command: str, settings: dict[str, Any], *, smoke: bool, max_frame
     if not path.is_file():
         raise FileNotFoundError(f"OpenPI script is missing: {path}")
     train_config = make_train_config(settings, smoke=smoke)
+    if command == "train" and train_config.data.create(
+        train_config.assets_dirs, train_config.model
+    ).norm_stats is None:
+        run_openpi("norm", settings, smoke=smoke, max_frames=None)
+        train_config = make_train_config(settings, smoke=smoke)
     import openpi.training.config as registry
 
     registry._CONFIGS_DICT[train_config.name] = train_config
+    if command == "train" and settings.get("swanlab_enabled", False):
+        try:
+            import swanlab
+        except ImportError as exc:
+            raise RuntimeError("JAX training with SwanLab enabled requires swanlab") from exc
+        swanlab.sync_wandb(wandb_run=False)
     spec = importlib.util.spec_from_file_location(f"openpi_project_{script_name}", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load OpenPI script: {path}")

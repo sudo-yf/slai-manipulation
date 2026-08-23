@@ -50,6 +50,10 @@ schemas:
     dimension: 26
     joint_groups: [ur5, wujihand]
     note: Legacy/current real recordings do not contain the two wrist joints.
+  task1_v1:
+    dimension: 28
+    joint_groups: [ur5, wujihand, wrist]
+    note: Task1 real capture stores the two unmeasured wrist DoF as explicit zero constants.
   simulation_v1:
     dimension: 28
     joint_groups: [ur5, wrist, wujihand]

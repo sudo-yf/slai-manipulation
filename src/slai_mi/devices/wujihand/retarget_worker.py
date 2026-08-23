@@ -11,8 +11,11 @@ from pathlib import Path
 
 import numpy as np
 
+from slai_mi.devices.wujihand.retarget_camera import (
+    dedicated_retarget_camera,
+    require_connected_retarget_camera,
+)
 from slai_mi.devices.wujihand.tracking import LandmarkGate
-from slai_mi.input_schema import enabled_cameras, load_input_schema
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 LANDMARK_STALE_S = 0.2
@@ -21,18 +24,12 @@ LANDMARK_STALE_S = 0.2
 class LocalRetargetProvider:
     def __init__(self, request: dict) -> None:
         hardware = request["hardware"]
-        schema = load_input_schema(hardware.get("input_schema"))
-        camera = next((item for item in enabled_cameras(schema) if item.get("retarget_input")), None)
-        if camera is None:
-            raise ValueError("input schema must select one retarget_input camera")
-        devices = hardware["cameras"]["devices"]
-        device = next((item for item in devices if item["role"] == camera["role"]), None)
-        if device is None:
-            raise ValueError(f"retarget camera role {camera['role']} is absent from hardware config")
-        self.camera_role = str(camera["role"])
+        self.camera_device, self.camera_serial = dedicated_retarget_camera(hardware)
+        require_connected_retarget_camera(self.camera_device, self.camera_serial)
         third_party = PROJECT_ROOT / "third_party/wuji-retargeting"
         sys.path.insert(0, str(third_party))
         with contextlib.redirect_stdout(sys.stderr):
+            import cv2
             from example.input_devices.realsense_mediapipe import RealsenseMediaPipe
             from wuji_retargeting import Retargeter
 
@@ -40,12 +37,21 @@ class LocalRetargetProvider:
             self.detector = RealsenseMediaPipe(
                 hand_side="right",
                 video_config=wuji.get("video_input"),
-                serial_number=str(device["serial"]),
-                external_frames=bool(request["external_frames"]),
+                external_frames=True,
             )
             self.retargeter = Retargeter.from_yaml(
                 str(wuji["retarget_config"]), hand_side="right"
             )
+            self.capture = None
+            if not request["external_frames"]:
+                self.capture = cv2.VideoCapture(self.camera_device)
+                self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                self.capture.set(cv2.CAP_PROP_FPS, 30)
+                if not self.capture.isOpened():
+                    raise RuntimeError(
+                        f"failed to open retarget USB camera: {self.camera_device}"
+                    )
         self.gate = LandmarkGate(min_confidence=0.7)
         self.memory = None
         shape = request.get("shared_shape")
@@ -65,6 +71,12 @@ class LocalRetargetProvider:
             self.detector.process_bgr_frame(np.asarray(self.shared_frame).copy())
 
     def target(self, now: float) -> list[float] | None:
+        if self.capture is not None:
+            ok, frame = self.capture.read()
+            if not ok:
+                raise RuntimeError("failed to read retarget USB camera frame")
+            with contextlib.redirect_stdout(sys.stderr):
+                self.detector.process_bgr_frame(frame)
         detected_at = self.detector.get_detection_time()
         if detected_at is None or now - detected_at > LANDMARK_STALE_S:
             self.gate.reset()
@@ -82,6 +94,8 @@ class LocalRetargetProvider:
         return target.tolist()
 
     def close(self) -> None:
+        if self.capture is not None:
+            self.capture.release()
         with contextlib.redirect_stdout(sys.stderr):
             self.detector.cleanup()
         if self.memory is not None:
@@ -103,7 +117,8 @@ def main() -> None:
                     provider = LocalRetargetProvider(request)
                     result = {
                         "joint_limits": provider.joint_limits,
-                        "camera_role": provider.camera_role,
+                        "camera_serial": provider.camera_serial,
+                        "camera_device": provider.camera_device,
                     }
                 elif provider is None:
                     raise RuntimeError("worker is not initialized")

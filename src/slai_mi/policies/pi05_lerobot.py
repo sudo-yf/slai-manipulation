@@ -12,6 +12,40 @@ import numpy as np
 from slai_mi.input_schema import load_input_schema, split_capture_vector
 
 
+class PI05Policy:
+    """Loaded LeRobot policy shared by offline checks and live supervised execution."""
+
+    def __init__(self, config: dict[str, Any], checkpoint: Path) -> None:
+        import torch
+        from lerobot.configs import PreTrainedConfig
+        from lerobot.datasets import LeRobotDatasetMetadata
+        from lerobot.policies.factory import make_policy, make_pre_post_processors
+
+        dataset = config["dataset"]
+        metadata = LeRobotDatasetMetadata(str(dataset["repo_id"]), root=Path(dataset["root"]))
+        policy_config = PreTrainedConfig.from_pretrained(str(checkpoint))
+        policy_config.pretrained_path = checkpoint
+        policy_config.device = str(config.get("device", "cuda"))
+        self.policy = make_policy(policy_config, ds_meta=metadata)
+        self.preprocessor, self.postprocessor = make_pre_post_processors(
+            policy_config,
+            pretrained_path=str(checkpoint),
+            dataset_stats=metadata.stats,
+            dataset_meta=metadata,
+        )
+        self.policy.eval()
+        self.torch = torch
+
+    def infer(self, batch: dict[str, object]) -> np.ndarray:
+        processed = self.preprocessor(batch)
+        with self.torch.inference_mode():
+            action = self.postprocessor(self.policy.select_action(processed))
+        result = np.asarray(action.detach().cpu(), dtype=np.float32)
+        if result.ndim != 2 or not len(result) or not np.isfinite(result).all():
+            raise RuntimeError(f"PI0.5 produced an invalid action {result.shape}")
+        return result
+
+
 class PI05OfflineBackend:
     def __init__(self, *, config: dict[str, Any], checkpoint: Path, target: str) -> None:
         if target != "offline":
@@ -21,9 +55,7 @@ class PI05OfflineBackend:
 
     def run(self) -> dict[str, object]:
         import torch
-        from lerobot.configs import PreTrainedConfig
-        from lerobot.datasets import LeRobotDataset, LeRobotDatasetMetadata
-        from lerobot.policies.factory import make_policy, make_pre_post_processors
+        from lerobot.datasets import LeRobotDataset
 
         dataset_config = self.config.get("dataset")
         if not isinstance(dataset_config, dict):
@@ -31,22 +63,12 @@ class PI05OfflineBackend:
         root = Path(dataset_config["root"]).expanduser().resolve()
         repo_id = str(dataset_config["repo_id"])
         frame_index = int(dataset_config.get("frame_index", 0))
-        metadata = LeRobotDatasetMetadata(repo_id, root=root)
         dataset = LeRobotDataset(repo_id, root=root, video_backend=dataset_config.get("video_backend"))
         if not 0 <= frame_index < len(dataset):
             raise ValueError(f"frame_index {frame_index} is outside dataset length {len(dataset)}")
 
-        policy_config = PreTrainedConfig.from_pretrained(str(self.checkpoint))
-        policy_config.pretrained_path = self.checkpoint
-        policy_config.device = str(self.config.get("device", "cuda"))
         started = time.perf_counter()
-        policy = make_policy(policy_config, ds_meta=metadata)
-        preprocessor, postprocessor = make_pre_post_processors(
-            policy_config,
-            pretrained_path=str(self.checkpoint),
-            dataset_stats=metadata.stats,
-            dataset_meta=metadata,
-        )
+        policy = PI05Policy(self.config, self.checkpoint)
         load_s = time.perf_counter() - started
 
         item = dataset[frame_index]
@@ -54,16 +76,12 @@ class PI05OfflineBackend:
             key: value.unsqueeze(0) if isinstance(value, torch.Tensor) else [value]
             for key, value in item.items()
         }
-        processed = preprocessor(batch)
-        policy.eval()
-        torch.cuda.synchronize() if policy_config.device.startswith("cuda") else None
+        device = str(self.config.get("device", "cuda"))
+        torch.cuda.synchronize() if device.startswith("cuda") else None
         started = time.perf_counter()
-        with torch.inference_mode():
-            action = policy.select_action(processed)
-            action = postprocessor(action)
-        torch.cuda.synchronize() if policy_config.device.startswith("cuda") else None
+        action_array = policy.infer(batch)
+        torch.cuda.synchronize() if device.startswith("cuda") else None
         inference_s = time.perf_counter() - started
-        action_array = np.asarray(action.detach().cpu(), dtype=np.float32)
 
         physical_root = Path(dataset_config["physical_v21_root"]).expanduser().resolve()
         physical_info = json.loads((physical_root / "meta" / "info.json").read_text())

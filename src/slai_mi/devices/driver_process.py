@@ -42,6 +42,7 @@ class DriverProcess:
         self.process = subprocess.Popen(
             [str(self.python), "-m", self.module, "--socket", str(socket_path), "--device-id", self.device_id, *self.arguments],
             env=env,
+            start_new_session=True,
         )
         deadline = time.monotonic() + self.startup_timeout_s
         while time.monotonic() < deadline:

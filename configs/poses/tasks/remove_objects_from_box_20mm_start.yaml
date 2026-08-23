@@ -1,0 +1,15 @@
+schema_version: 1
+name: remove_objects_from_box_20mm_start
+kind: task_start
+configured: true
+units: rad
+schema_ref: ../../dataset.yaml#schemas.real_v1
+joint_names: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint, right_finger1_joint1, right_finger1_joint2, right_finger1_joint3, right_finger1_joint4, right_finger2_joint1, right_finger2_joint2, right_finger2_joint3, right_finger2_joint4, right_finger3_joint1, right_finger3_joint2, right_finger3_joint3, right_finger3_joint4, right_finger4_joint1, right_finger4_joint2, right_finger4_joint3, right_finger4_joint4, right_finger5_joint1, right_finger5_joint2, right_finger5_joint3, right_finger5_joint4]
+joint_positions: [3.0908393383026125, -1.3222540060626429, -0.8872306028949183, -1.986740032826559, 1.552709174156189, -2.5647578875171106, 0.38325315713882446, 0.08801259845495224, -0.01615886576473713, -0.023999566212296486, 0.2190479338169098, -0.20702338218688965, -0.031543418765068054, -0.023413173854351044, 0.2239750623703003, -0.20641125738620758, -0.027377795428037643, -0.028402598574757576, 0.22042520344257355, -0.2094908356666565, -0.02481665462255478, -0.02609970234334469, 0.22303955256938934, -0.20418399572372437, -0.023302048444747925, -0.014519952237606049]
+measured_tcp_pose_xyz_rotvec: [-0.3759489457963996, 0.13863422835435066, 0.5613803473023362, -1.318240652605199, 2.0265807952143913, -1.4757164511428056]
+provenance:
+  source: measured:ur5_rtde_receive
+  robot_host: 192.168.1.106
+  captured_at: "2026-08-22T19:10:32+08:00"
+  record_type: current_ur5_6dof_plus_existing_wujihand_20dof
+  safety_note: UR5 was stationary in robot mode 7 and safety mode 1; WujiHand values were retained from the previously commissioned 20 mm task zero.

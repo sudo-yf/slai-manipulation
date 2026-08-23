@@ -12,7 +12,6 @@ capture:
       dataset_key: observation.images.d435_primary_rgb
       openpi_key: primary_rgb
       policy_key: observation.images.base_0_rgb
-      retarget_input: true
     - role: wrist
       label: 手腕视角
       enabled: true
@@ -21,7 +20,6 @@ capture:
       dataset_key: observation.images.d405_rgb
       openpi_key: wrist_rgb
       policy_key: observation.images.right_wrist_0_rgb
-      retarget_input: false
     - role: secondary
       label: 辅助视角
       enabled: true
@@ -31,7 +29,6 @@ capture:
       dataset_key: observation.images.d435_secondary_rgb
       openpi_key: secondary_rgb
       policy_key: observation.images.left_wrist_0_rgb
-      retarget_input: false
   image_shape: [480, 640, 3]
   primary_timeline_role: primary
   tcp_pose:
@@ -70,6 +67,11 @@ capture:
           - wuji.right_finger5_joint2.position
           - wuji.right_finger5_joint3.position
           - wuji.right_finger5_joint4.position
+      - channel: wrist
+        attribute: actual_q
+        indices: all
+        display: false
+        names: [wrist_pitch_joint.position, wrist_yaw_joint.position]
   action:
     key: action
     components:
@@ -101,6 +103,11 @@ capture:
           - wuji.right_finger5_joint2.target_position
           - wuji.right_finger5_joint3.target_position
           - wuji.right_finger5_joint4.target_position
+      - channel: wrist
+        attribute: target_q
+        indices: all
+        display: false
+        names: [wrist_pitch_joint.target_position, wrist_yaw_joint.target_position]
 
 pi05:
   fps: 15

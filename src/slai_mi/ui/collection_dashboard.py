@@ -161,6 +161,11 @@ class CollectionDashboardProvider:
         cameras = enabled_cameras(self.schema)
         camera_roles = [str(camera["role"]) for camera in cameras]
         state_names = [str(item["name"]) for item in synchronization["state_channels"]]
+        display_state_dim = sum(
+            len(component["names"])
+            for component in capture["state"]["components"]
+            if "constant" not in component and component.get("display", True)
+        )
         command_name = str(synchronization["command_channel"]["name"])
         samples = [
             *(inputs.cameras[role] for role in camera_roles),
@@ -194,7 +199,14 @@ class CollectionDashboardProvider:
         state = compose_capture_vector(
             self.schema,
             "state",
-            {name: inputs.channels[name].value for name in state_names},
+            {
+                **{name: inputs.channels[name].value for name in state_names},
+                **(
+                    {"wrist": inputs.channels["wrist"].value}
+                    if "wrist" in inputs.channels
+                    else {}
+                ),
+            },
         )
         mouse = inputs.channels[command_name].value
         temperature = getattr(inputs.channels["wuji"].value, "temperature", None)
@@ -247,7 +259,7 @@ class CollectionDashboardProvider:
             self._status["camera_online"] = sum(item["connected"] for item in camera_status)
             self._status["dof"] = {
                 **self._status["dof"],
-                "values": state.astype(float).tolist(),
+                "values": state[:display_state_dim].astype(float).tolist(),
                 "valid": bool(all(validity[state_offset : state_offset + len(state_names)])),
                 "age_ms": round(max(state_ages), 1),
             }

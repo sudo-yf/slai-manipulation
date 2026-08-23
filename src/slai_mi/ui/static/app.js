@@ -153,7 +153,7 @@ async function refreshMouse() {
     const motion = Array.from({length: 6}, (_, index) =>
       Math.max(-1, Math.min(1, Number(state.motion?.[index] || 0))));
     const puck = document.querySelector(".puck");
-    puck.style.transform = `translate(${motion[0] * 16}px, ${-motion[1] * 14}px)
+    puck.style.transform = `translate(${motion[1] * 14}px, ${motion[0] * 16}px)
       scale(${1 + motion[2] * 0.13}) rotateX(${-motion[3] * 18}deg)
       rotateY(${motion[4] * 18}deg) rotateZ(${motion[5] * 24}deg)`;
     puck.classList.toggle("active", motion.some((value) => Math.abs(value) > 0.01));

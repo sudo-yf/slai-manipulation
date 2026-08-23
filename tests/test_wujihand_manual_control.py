@@ -96,3 +96,25 @@ def test_home_uses_task_zero_independently_of_open_preset() -> None:
     assert controller.update({int(Button.HOME): True}, 1.04)
     assert np.all(session.commands[-1] > 0.0)
     np.testing.assert_array_equal(controller.home_target, np.full(20, 0.5))
+
+
+def test_circled_buttons_use_independent_legacy_full_hand_states() -> None:
+    session = _Session()
+    controller = ManualWujiController(
+        session,
+        open_target=np.zeros(20),
+        grasp_target=np.ones(20),
+        home_target=np.zeros(20),
+        lower=np.full(20, -2.0),
+        upper=np.full(20, 2.0),
+        settings=ManualHandSettings(),
+        timestamp=1.0,
+        auxiliary_open_target=np.full(20, -0.5),
+        auxiliary_grasp_target=np.full(20, 0.5),
+    )
+    assert controller.update({int(Button.ROLL_CW): True}, 1.04)
+    assert np.all(session.commands[-1] > 0.0)
+    controller.trajectory.command.fill(0.0)
+    controller.trajectory.command_velocity.fill(0.0)
+    assert controller.update({int(Button.T): True}, 1.08)
+    assert np.all(session.commands[-1] < 0.0)

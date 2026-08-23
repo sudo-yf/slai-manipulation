@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from slai_mi.devices.ur5.process import UR5DriverProcess
 def test_fake_ur5_process_state_motion_limits_and_disable():
     driver = UR5DriverProcess(python=Path(sys.executable), host="fake", fake=True)
     with driver:
+        assert driver.process is not None
+        assert os.getsid(driver.process.pid) == driver.process.pid
         assert driver.read_state()["robot_mode"] == 7
         driver.prepare_control()
         with pytest.raises(RuntimeError, match="must be armed"):

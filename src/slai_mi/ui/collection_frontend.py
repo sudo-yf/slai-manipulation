@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlparse
 import yaml
 
 from slai_mi.datasets.lerobot_v3.schema import RECORDED_BUTTON_NAMES
-from slai_mi.input_schema import capture_vector_names, enabled_cameras, load_input_schema
+from slai_mi.input_schema import enabled_cameras, load_input_schema
 
 STATIC_ROOT = Path(__file__).with_name("static")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -158,7 +158,12 @@ def dashboard_status_template(
                 "error": None,
             }
         )
-    state_names = list(capture_vector_names(schema, "state"))
+    state_names = [
+        name
+        for component in schema["capture"]["state"]["components"]
+        if "constant" not in component and component.get("display", True)
+        for name in component["names"]
+    ]
     source_names = [
         *(str(camera["role"]) for camera in enabled_cameras(schema)),
         *(str(channel["name"]) for channel in schema["synchronization"]["state_channels"]),

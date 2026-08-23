@@ -107,6 +107,21 @@ def test_vendor_prepare_starts_and_checks_control_without_motion(
     vendor.close()
 
 
+def test_vendor_reconnects_when_uploaded_script_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fakes(monkeypatch)
+    vendor = VendorRTDE("robot")
+    vendor.prepare([0.0] * 6)
+    stale = vendor.control
+    stale.isProgramRunning = lambda: False
+    vendor.prepare([0.0] * 6)
+    assert vendor.control is not stale
+    assert stale.disconnected
+    assert vendor.control.reuploads == 1
+    vendor.close()
+
+
 def test_vendor_rejects_false_speed_ack(monkeypatch: pytest.MonkeyPatch) -> None:
     install_fakes(monkeypatch)
     vendor = VendorRTDE("robot")

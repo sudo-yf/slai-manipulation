@@ -10,6 +10,7 @@ data/lerobot/*
 data/training/*
 data/normalization/*
 data/models/*
+data/pose-recordings/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/lerobot/.gitkeep
@@ -25,4 +26,3 @@ logs/
 # Third-party embedded repos and vendored code are managed upstream,
 # not committed to this repository.
 third_party/
-

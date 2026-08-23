@@ -36,6 +36,7 @@ class ContractDatasetWriter:
 
 
 def create_dataset(*, repo_id: str, root: Path, fps: int = FPS):
+    from lerobot.configs.video import RGBEncoderConfig
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     if root.exists():
@@ -51,7 +52,13 @@ def create_dataset(*, repo_id: str, root: Path, fps: int = FPS):
         use_videos=True,
         tolerance_s=1e-4,
         batch_encoding_size=1,
-        vcodec="h264",
+        rgb_encoder=RGBEncoderConfig(
+            vcodec="h264",
+            pix_fmt="yuv420p",
+            crf=23,
+            preset="veryfast",
+            video_backend="pyav",
+        ),
         streaming_encoding=True,
         encoder_queue_maxsize=90,
         encoder_threads=2,

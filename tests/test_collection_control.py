@@ -15,3 +15,10 @@ def test_escape_discards_an_active_episode() -> None:
     assert controls.update({}) is None
     assert controls.update({22: True}) is EpisodeAction.DISCARD
     assert not controls.recording
+
+
+def test_rotation_lock_finalizes_on_rising_edge() -> None:
+    controls = SpaceMouseEpisodeControls()
+    assert controls.update({26: True}) is EpisodeAction.FINALIZE
+    assert controls.update({26: True}) is None
+    assert controls.update({}) is None

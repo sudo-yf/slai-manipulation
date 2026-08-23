@@ -28,6 +28,8 @@ class FakeSession:
     hand_settings = ManualHandSettings()
     open_hand_target = np.zeros(20)
     grasp_hand_target = np.ones(20)
+    auxiliary_open_hand_target = np.full(20, -0.5)
+    auxiliary_grasp_hand_target = np.full(20, 0.5)
     wuji_home_joints = np.zeros(20)
     wrist_3_jog_speed = 0.2
     home_joint_speed = 0.6
@@ -201,10 +203,15 @@ def test_station_session_loads_legacy_profile_without_watchdog_changes(monkeypat
     assert calls["wuji"]["max_velocity_rad_s"] == 3.0
 
 
-def test_uncommissioned_task_home_is_rejected() -> None:
-    task = yaml.safe_load(
-        Path("configs/tasks/remove_objects_from_box.yaml").read_text(encoding="utf-8")
+def test_uncommissioned_task_home_is_rejected(monkeypatch) -> None:
+    from slai_mi import site_adapter
+
+    monkeypatch.setattr(
+        site_adapter,
+        "_load_task_ref",
+        lambda _reference: {"name": "test_uncommissioned", "configured": False},
     )
+    task = {"start_pose_ref": "test_uncommissioned.yaml", "state_schema": "real_v1"}
     with np.testing.assert_raises_regex(ValueError, "configured must be true"):
         _task_home_joints(task)
 
@@ -243,7 +250,19 @@ def test_collection_camera_path_does_not_construct_retarget_provider(monkeypatch
 def test_real_policy_bridge_uses_schema_and_supervised_writes():
     session = FakeSession()
     bridge = RealPolicyBridge(session, "configs/input_schema.yaml")
-    bridge.apply(np.arange(26, dtype=np.float32))
-    assert session.twists == [((0.0, 1.0, 2.0, 3.0, 4.0, 5.0), 0.5, 0.008)]
-    assert session.hands == [tuple(float(value) for value in range(6, 26))]
+    action = np.concatenate((np.full(6, 0.01), np.arange(20) / 100))
+    bridge.apply(action)
+    np.testing.assert_allclose(session.twists[0][0], np.full(6, 0.01))
+    assert session.twists[0][1:] == (0.5, 0.008)
+    np.testing.assert_allclose(session.hands[0], np.arange(20) / 100)
     assert session.checks == 1
+
+
+def test_real_policy_bridge_limits_policy_speed():
+    session = FakeSession()
+    session.max_rotation_rad = 0.0
+    bridge = RealPolicyBridge(session, "configs/input_schema.yaml")
+    bridge.apply(np.concatenate((np.ones(6), np.zeros(20))))
+    linear, angular = np.split(np.asarray(session.twists[0][0]), 2)
+    np.testing.assert_allclose(np.linalg.norm(linear), session.speed_settings.translation)
+    np.testing.assert_allclose(np.linalg.norm(angular), session.speed_settings.rotation)

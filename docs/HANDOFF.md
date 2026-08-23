@@ -1,7 +1,7 @@
 # slai-manipulation 交接说明
 
 更新时间：2026-08-16  
-项目目录：`/home/user/shiyi/workspace/active/slai-manipulation`  
+项目目录：`/home/user/shiyi/slai-manipulation`
 行为基准：`/home/user/shiyi/workspace/legacy/Robot_Teleoperation`
 
 ## 先看这里
@@ -31,7 +31,7 @@
 采集入口：
 
 ```bash
-cd /home/user/shiyi/workspace/active/slai-manipulation
+cd /home/user/shiyi/slai-manipulation
 
 # 只打印计划，不打开硬件
 uv run slai-collect-real --episodes 1
@@ -265,7 +265,7 @@ spnav/evdev
    - 新版 `src/slai_mi/devices/wujihand/retarget_worker.py`
    - 新版 `src/slai_mi/site_adapter.py` 的 `WujiRetargetTargetProvider` / `WujiTargetController`
    - `configs/hardware.yaml:retarget_python/retarget_config`
-   - `configs/input_schema.yaml` 的 `retarget_input`
+   - `configs/hardware.yaml` 的 `wujihand.retarget_camera_device`（HBVCAM 4K USB，相机序列号 `HB202400001`）
 4. 完成 iPhone 操作链路。现在协议、Pose Hub、桥接、iOS 工程和 5005/5006 端口约定存在，
    但没有完成 iPhone 真机姿态到 supervised UR5 命令的现场验收。老版/新版重点看：
    - `legacy/Robot_Teleoperation/ios/` 及其 iPhone/Record3D 相关实现

@@ -83,7 +83,14 @@ def assemble_frame(inputs: SynchronizedInputs, task_prompt: str, *, now: float |
         OBSERVATION_STATE: compose_capture_vector(
             INPUT_SCHEMA,
             "state",
-            {name: inputs.channels[name].value for name in STATE_SOURCE_NAMES},
+            {
+                **{name: inputs.channels[name].value for name in STATE_SOURCE_NAMES},
+                **(
+                    {"wrist": inputs.channels["wrist"].value}
+                    if "wrist" in inputs.channels
+                    else {}
+                ),
+            },
         ),
         OBSERVATION_TCP_POSE: convert_tcp_pose(
             ur5.actual_tcp_pose,
@@ -93,7 +100,14 @@ def assemble_frame(inputs: SynchronizedInputs, task_prompt: str, *, now: float |
         ACTION: compose_capture_vector(
             INPUT_SCHEMA,
             "action",
-            {name: inputs.channels[name].value for name in STATE_SOURCE_NAMES},
+            {
+                **{name: inputs.channels[name].value for name in STATE_SOURCE_NAMES},
+                **(
+                    {"wrist": inputs.channels["wrist"].value}
+                    if "wrist" in inputs.channels
+                    else {}
+                ),
+            },
         ),
         UR5_TARGET_QD: np.asarray(ur5.target_qd, dtype=np.float32),
         ACTUAL_TCP_SPEED: np.asarray(ur5.actual_tcp_speed, dtype=np.float32),

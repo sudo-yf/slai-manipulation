@@ -28,9 +28,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hardware-config", default="configs/hardware.yaml")
     parser.add_argument("--dataset-config", default="configs/dataset.yaml")
     parser.add_argument(
-        "--task", default="configs/tasks/remove_objects_from_box_20mm.yaml"
+        "--task", default="configs/tasks/task1.yaml"
     )
-    parser.add_argument("--episodes", type=int, default=1)
+    episode_mode = parser.add_mutually_exclusive_group()
+    episode_mode.add_argument("--episodes", type=int, default=1)
+    episode_mode.add_argument(
+        "--continuous",
+        action="store_true",
+        help="Keep accepting episodes until interrupted",
+    )
     parser.add_argument("--execute-real", action="store_true", help="Allow real robot commands")
     parser.add_argument("--confirm", help="Required physical-motion confirmation phrase")
     parser.add_argument("--adapter-plugin", help="Site adapter factory as module:factory")
@@ -56,7 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "app": "collect_real",
             "mode": "execute" if args.execute_real else "dry-run",
             "task": task.get("task", {}).get("id"),
-            "episodes": args.episodes,
+            "episodes": "continuous" if args.continuous else args.episodes,
             "dataset_format": dataset.get("format"),
             "dataset_root": str(project_path(dataset.get("root", "data/lerobot"))),
             "enabled_devices": enabled_devices(hardware),
@@ -89,7 +95,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dataset,
                 task,
                 dependencies,
-                episode_limit=args.episodes,
+                episode_limit=None if args.continuous else args.episodes,
                 dashboard_enabled=not args.no_dashboard,
                 dashboard_host=args.dashboard_host,
                 dashboard_port=args.dashboard_port,

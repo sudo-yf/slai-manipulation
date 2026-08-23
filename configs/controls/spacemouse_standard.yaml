@@ -18,12 +18,12 @@ motion:
   deadzone: 0.12
 hand:
   command_hz: 30
-  grasp_speed: 0.25
-  grasp_acceleration: 0.75
-  release_speed: 3.0
-  release_acceleration: 20.0
-  retarget_speed: 1.50
-  retarget_acceleration: 8.0
+  grasp_speed: 0.50
+  grasp_acceleration: 1.50
+  release_speed: 6.0
+  release_acceleration: 40.0
+  retarget_speed: 3.0
+  retarget_acceleration: 16.0
   lost_hand_return_delay: 0.50
   one_euro_min_cutoff: 3.0
   one_euro_beta: 1.0

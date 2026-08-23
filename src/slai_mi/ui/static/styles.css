@@ -38,6 +38,7 @@ img[data-camera] { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit:
         border: 2px solid #999; border-radius: 50%; pointer-events: none;
         background: radial-gradient(circle at 38% 30%, #5e5e5e, #242424 62%);
         box-shadow: 0 8px 14px #000b; transform-style: preserve-3d;
+        transform-origin: center;
         transition: transform 45ms linear, border-color 80ms; }
 .puck::before, .puck::after { content: ""; position: absolute; background: #aaa; opacity: .6; }
 .puck::before { left: 16%; right: 16%; top: 49%; height: 2px; }

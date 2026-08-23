@@ -5,11 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/shiyi/workspace/active/slai-manipulation
+WorkingDirectory=%h/shiyi/slai-manipulation
 EnvironmentFile=%h/.config/pose-hub/pose-hub.env
 Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONPATH=%h/shiyi/workspace/active/slai-manipulation/src
-ExecStart=%h/shiyi/workspace/active/slai-manipulation/.venv/bin/python -m slai_mi.apps.pose_hub --run --host 100.73.226.20 --port 8706
+Environment=PYTHONPATH=%h/shiyi/slai-manipulation/src
+ExecStart=%h/shiyi/slai-manipulation/.venv/bin/python -m slai_mi.apps.pose_hub --run --host 100.73.226.20 --port 8706
 Restart=always
 RestartSec=2
 NoNewPrivileges=true

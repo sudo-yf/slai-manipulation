@@ -204,10 +204,18 @@ class ManualWujiController:
         upper: Sequence[float],
         settings: ManualHandSettings,
         timestamp: float,
+        auxiliary_open_target: Sequence[float] | None = None,
+        auxiliary_grasp_target: Sequence[float] | None = None,
     ) -> None:
         self.session = session
         self.open_target = _joint_vector(open_target)
         self.grasp_target = _joint_vector(grasp_target)
+        self.auxiliary_open_target = _joint_vector(
+            open_target if auxiliary_open_target is None else auxiliary_open_target
+        )
+        self.auxiliary_grasp_target = _joint_vector(
+            grasp_target if auxiliary_grasp_target is None else auxiliary_grasp_target
+        )
         self.home_target = _joint_vector(home_target)
         self.settings = settings
         self.trajectory = AccelerationLimitedTrajectory(
@@ -250,9 +258,9 @@ class ManualWujiController:
             speed = self.settings.release_speed
             acceleration = self.settings.release_acceleration
         elif thumb_mode == "toward_state_1":
-            target = self.grasp_target
+            target = self.auxiliary_grasp_target
         elif thumb_mode == "restore_state_0":
-            target = self.open_target
+            target = self.auxiliary_open_target
         elif mode == "close":
             target = self.grasp_target
             speed = np.full(20, self.settings.grasp_speed)

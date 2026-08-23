@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import yaml
 
-from slai_mi.apps.pi05 import main
+from slai_mi.apps.pi05 import _all_config, main
 from slai_mi.datasets.pi05 import (
     discover_source_roots,
     policy_rgb,
@@ -17,7 +17,7 @@ from slai_mi.datasets.pi05 import (
 from slai_mi.datasets.pi05_native import validate_native_v30_stats
 from slai_mi.evaluation.heldout import select_horizon_rows
 from slai_mi.input_schema import load_input_schema
-from slai_mi.training.lerobot_pi05 import build_lerobot_train_config
+from slai_mi.training.lerobot_pi05 import build_lerobot_train_config, run_lerobot_train
 
 
 class _Dataset:
@@ -157,6 +157,64 @@ def test_pi05_cli_defaults_to_a_non_executing_plan(capsys) -> None:
     )
 
 
+def test_jax_training_overrides_stay_on_openpi_backend(capsys) -> None:
+    assert main(
+        [
+            "train",
+            "--config",
+            "configs/pi05_h100_jax.yaml",
+            "--steps",
+            "1",
+            "--batch-size",
+            "1",
+            "--experiment",
+            "1gpu-1step",
+        ]
+    ) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["backend"] == "openpi_jax"
+    assert plan["steps"] == 1
+    assert plan["batch_size"] == 1
+
+
+def test_jax_training_invokes_openpi(tmp_path: Path, monkeypatch) -> None:
+    config = yaml.safe_load(Path("configs/pi05_h100_jax.yaml").read_text(encoding="utf-8"))
+    config_path = tmp_path / "jax.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    calls = []
+    monkeypatch.setenv("SLAI_PI05_REEXEC", "1")
+    monkeypatch.setattr(
+        "slai_mi.training.pi05.run_openpi",
+        lambda command, settings, *, smoke, max_frames: calls.append(
+            (command, settings["backend"], settings["steps"], settings["batch_size"])
+        ),
+    )
+
+    assert main(
+        [
+            "train",
+            "--config",
+            str(config_path),
+            "--steps",
+            "10",
+            "--batch-size",
+            "2",
+            "--execute",
+        ]
+    ) == 0
+    assert calls == [("train", "openpi_jax", 10, 2)]
+
+
+def test_all_config_is_scoped_to_one_capture() -> None:
+    config = yaml.safe_load(Path("configs/pi05.yaml").read_text(encoding="utf-8"))
+    source = Path("data/lerobot/remove_objects_from_box-20mm-20260817T191606").resolve()
+    generated, path = _all_config(config, source, "acceptance")
+    assert generated["dataset"]["source"] == str(source)
+    assert generated["dataset"]["native_v30"].endswith("acceptance_native_v30")
+    assert generated["policy"]["task_prompt"] == "Remove the objects from the box."
+    assert path.name == "pipeline.yaml"
+
+
 def test_lerobot_training_dimensions_follow_yaml_schema(tmp_path: Path) -> None:
     schema = load_input_schema()
     schema["pi05"]["action_horizon"] = 7
@@ -181,6 +239,54 @@ def test_lerobot_training_dimensions_follow_yaml_schema(tmp_path: Path) -> None:
     assert config["policy"]["n_action_steps"] == 7
     assert config["policy"]["max_state_dim"] == 40
     assert config["policy"]["max_action_dim"] == 48
+    assert config["wandb"] == {"enable": True, "project": "slai-pi05"}
+
+
+def test_full_lerobot_training_uses_swanlab_entrypoint(tmp_path: Path, monkeypatch) -> None:
+    dataset = tmp_path / "dataset"
+    metadata = dataset / "meta"
+    metadata.mkdir(parents=True)
+    (metadata / "stats.json").write_text(
+        json.dumps(
+            {
+                "observation.state": {"q01": [0.0], "q99": [1.0]},
+                "action": {"q01": [0.0], "q99": [1.0]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    executable = tmp_path / "bin" / "lerobot-train"
+    executable.parent.mkdir()
+    executable.touch()
+    settings = {
+        "input_schema": Path("configs/input_schema.yaml"),
+        "native_repo_id": "local/test",
+        "native_v30": dataset,
+        "base_checkpoint_dir": tmp_path / "model",
+        "output_repo_id": "local/output",
+        "experiment": "swanlab-test",
+        "steps": 10,
+        "batch_size": 2,
+        "save_interval": 5,
+        "lora_rank": 4,
+        "lerobot_train": executable,
+        "generated_train_config": tmp_path / "train.yaml",
+        "training_output_dir": tmp_path / "output",
+        "smoke_output_dir": tmp_path / "smoke",
+    }
+    calls = []
+    monkeypatch.setattr("slai_mi.training.lerobot_pi05.subprocess.run", lambda command, check: calls.append(command))
+
+    run_lerobot_train(settings, smoke=False)
+
+    assert calls == [
+        [
+            str(executable.with_name("python")),
+            "-m",
+            "slai_mi.training.lerobot_pi05",
+            f"--config_path={tmp_path / 'train.yaml'}",
+        ]
+    ]
 
 
 def test_native_training_view_requires_quantile_stats(tmp_path: Path) -> None:

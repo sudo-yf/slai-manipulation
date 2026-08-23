@@ -121,6 +121,13 @@ def test_hardware_template_contains_no_device_identity() -> None:
         assert hardware["wujihand"]["enabled"] is True
         assert str(hardware["wujihand"]["usb_serial"]).strip()
         assert str(hardware["wujihand"]["product_serial"]).strip()
+        retarget_serial = str(hardware["wujihand"]["retarget_camera_serial"]).strip()
+        assert retarget_serial
+        retarget_device = str(hardware["wujihand"]["retarget_camera_device"]).strip()
+        assert retarget_serial in retarget_device
+        assert retarget_serial not in {
+            str(device["serial"]).strip() for device in hardware["cameras"]["devices"]
+        }
         assert all(str(device["serial"]).strip() for device in hardware["cameras"]["devices"])
         assert hardware.get("adapter_plugin") == "slai_mi.site_adapter:make_dependencies"
     assert hardware["iphone"] == {

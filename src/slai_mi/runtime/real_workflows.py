@@ -156,13 +156,13 @@ class RealCollectionWorkflow:
         task: Mapping[str, Any],
         dependencies: CollectionDependencies,
         *,
-        episode_limit: int,
+        episode_limit: int | None,
         dashboard_enabled: bool = False,
         dashboard_host: str = "127.0.0.1",
         dashboard_port: int = 8765,
         dashboard_open_browser: bool = True,
     ) -> None:
-        if episode_limit < 1:
+        if episode_limit is not None and episode_limit < 1:
             raise ValueError("episode_limit must be at least one")
         self.hardware = hardware
         self.dataset_config = dataset_config
@@ -231,7 +231,12 @@ class RealCollectionWorkflow:
             )
             homing = False
             pending_auto_start = False
+            pending_save = False
+            pending_discard = False
             home_started_at: float | None = None
+
+            def limit_reached() -> bool:
+                return self.episode_limit is not None and saved >= self.episode_limit
 
             def begin_episode(*, automatic: bool) -> None:
                 nonlocal active_stop, worker, attempts
@@ -261,9 +266,45 @@ class RealCollectionWorkflow:
                 home_started_at = time.monotonic()
                 if dashboard is not None:
                     dashboard.provider.set_phase(
-                        "homing", "归零中", can_record=False, recording=False
+                        "homing",
+                        "归零中（继续录制）" if pending_save else "归零中",
+                        can_record=False,
+                        recording=pending_save,
                     )
                     dashboard.provider.event(message, code="homing")
+
+            def stop_episode_recorder() -> int:
+                nonlocal active_stop, worker
+                if active_stop is None or worker is None:
+                    raise RuntimeError("episode recorder is not active")
+                active_stop.set()
+                worker.thread.join(timeout=5.0)
+                if worker.thread.is_alive():
+                    raise RuntimeError("episode recorder did not stop")
+                if failures:
+                    raise RuntimeError(
+                        f"episode recorder failed: {failures[0]}"
+                    ) from failures[0]
+                frame_count = int(getattr(recorder, "frame_count", 1))
+                active_stop = None
+                worker = None
+                return frame_count
+
+            def finalize_from_lock() -> None:
+                if active_stop is not None and worker is not None:
+                    stop_episode_recorder()
+                if dashboard is not None:
+                    dashboard.provider.set_phase(
+                        "finalizing",
+                        "正在结束",
+                        can_record=False,
+                        recording=False,
+                    )
+                    dashboard.provider.event(
+                        "LOCK 已按下：丢弃未提交的当前段，保留并完成已保存 Episode 写入",
+                        level="success",
+                        code="finalize",
+                    )
 
             try:
                 if dashboard is not None or supports_home:
@@ -283,12 +324,17 @@ class RealCollectionWorkflow:
                         "ready", "可以开始录制", can_record=True, recording=False
                     )
                     dashboard.provider.event(
-                        "真实输入已接入；Menu 开始、Fit 保存、Esc 丢弃",
+                        "真实输入已接入；Menu 开始、Fit 继续录制回零过程并在到位后保存、"
+                        "Esc 丢弃",
                         level="success",
                         code="ready",
                     )
                 while not stop_event.is_set():
-                    if saved >= self.episode_limit and not homing and active_stop is None:
+                    if failures:
+                        raise RuntimeError(
+                            f"episode recorder failed: {failures[0]}"
+                        ) from failures[0]
+                    if limit_reached() and not homing and active_stop is None:
                         break
                     motion, buttons = mouse.state()
                     if dashboard is not None:
@@ -299,8 +345,12 @@ class RealCollectionWorkflow:
                         else {"at_home": True, "detail": ""}
                     )
                     if homing:
-                        controls.synchronize(buttons)
+                        homing_action = controls.update(buttons)
+                        controls.abort()
                         if bool(home.get("at_home")):
+                            frame_count = (
+                                stop_episode_recorder() if pending_save else None
+                            )
                             mouse.clear_home()
                             homing = False
                             home_started_at = None
@@ -310,7 +360,41 @@ class RealCollectionWorkflow:
                                     level="success",
                                     code="home_complete",
                                 )
-                            if pending_auto_start and saved < self.episode_limit:
+                            if pending_save:
+                                if dashboard is not None:
+                                    dashboard.provider.set_phase(
+                                        "saving",
+                                        "归零完成，正在保存",
+                                        can_record=False,
+                                        recording=False,
+                                    )
+                                pending_save = False
+                                if frame_count == 0:
+                                    dataset.clear_episode_buffer()
+                                    pending_discard = True
+                                    if dashboard is not None:
+                                        dashboard.provider.event(
+                                            f"Episode {saved + 1} 已丢弃：没有有效帧",
+                                            level="warning",
+                                            code="episode_empty",
+                                        )
+                                else:
+                                    dataset.save_episode()
+                                    saved += 1
+                                    if dashboard is not None:
+                                        dashboard.provider.finish_episode("save", index=saved)
+                            if pending_discard:
+                                pending_discard = False
+                                if dashboard is not None:
+                                    dashboard.provider.event(
+                                        "当前 Episode 已丢弃，已归零，等待 Menu；不会自动录制",
+                                        level="warning",
+                                        code="episode_discard_wait",
+                                    )
+                            if homing_action is EpisodeAction.FINALIZE:
+                                finalize_from_lock()
+                                break
+                            if pending_auto_start and not limit_reached():
                                 pending_auto_start = False
                                 begin_episode(automatic=True)
                             elif dashboard is not None:
@@ -318,9 +402,12 @@ class RealCollectionWorkflow:
                                 dashboard.provider.set_phase(
                                     "ready",
                                     "归零完成，按 Menu 开始",
-                                    can_record=saved < self.episode_limit,
+                                    can_record=not limit_reached(),
                                     recording=False,
                                 )
+                        elif homing_action is EpisodeAction.FINALIZE:
+                            finalize_from_lock()
+                            break
                         elif (
                             home_started_at is not None
                             and time.monotonic() - home_started_at >= HOME_TIMEOUT_S
@@ -329,6 +416,17 @@ class RealCollectionWorkflow:
                             homing = False
                             pending_auto_start = False
                             home_started_at = None
+                            if pending_save:
+                                stop_episode_recorder()
+                                dataset.clear_episode_buffer()
+                                pending_save = False
+                                if dashboard is not None:
+                                    dashboard.provider.event(
+                                        f"Episode {saved + 1} 未保存：自动归零超时",
+                                        level="warning",
+                                        code="episode_discard",
+                                    )
+                            pending_discard = False
                             if dashboard is not None:
                                 dashboard.provider.set_phase(
                                     "blocked",
@@ -359,6 +457,19 @@ class RealCollectionWorkflow:
                             can_record=False,
                             recording=False,
                         )
+                    elif supports_home and active_stop is None and dashboard is not None:
+                        # Feedback can briefly leave the home tolerance while the
+                        # hand settles. Restore the idle controls once it is stable
+                        # again instead of leaving the dashboard blocked forever.
+                        dashboard.provider.set_phase(
+                            "ready",
+                            "归零完成，按 Menu 开始",
+                            can_record=not limit_reached(),
+                            recording=False,
+                        )
+                    if action is EpisodeAction.FINALIZE:
+                        finalize_from_lock()
+                        break
                     if action is EpisodeAction.START:
                         if supports_home and not bool(home.get("at_home")):
                             if dashboard is not None:
@@ -377,47 +488,38 @@ class RealCollectionWorkflow:
                     elif action in {EpisodeAction.SAVE, EpisodeAction.DISCARD}:
                         if active_stop is None or worker is None:
                             raise RuntimeError("episode control changed without an active recorder")
-                        active_stop.set()
-                        worker.thread.join(timeout=5.0)
-                        if worker.thread.is_alive():
-                            raise RuntimeError("episode recorder did not stop")
-                        if failures:
-                            raise RuntimeError(f"episode recorder failed: {failures[0]}") from failures[0]
                         if action is EpisodeAction.SAVE:
-                            if dashboard is not None:
-                                dashboard.provider.set_phase(
-                                    "saving", "正在保存", can_record=False, recording=False
-                                )
-                            frame_count = int(getattr(recorder, "frame_count", 1))
-                            if frame_count == 0:
-                                dataset.clear_episode_buffer()
-                                if dashboard is not None:
-                                    dashboard.provider.event(
-                                        f"Episode {saved + 1} 已丢弃：没有有效帧",
-                                        level="warning",
-                                        code="episode_empty",
-                                    )
+                            if supports_home:
+                                pending_save = True
                                 start_homing(
-                                    f"Episode {saved + 1} 已丢弃，正在自动归零",
-                                    auto_start=True,
-                                )
-                            else:
-                                dataset.save_episode()
-                                saved += 1
-                                if dashboard is not None:
-                                    dashboard.provider.event(
-                                        f"Episode {saved} 保存成功，正在自动归零",
-                                        level="success",
-                                        code="episode_save",
-                                    )
-                                start_homing(
-                                    f"Episode {saved} 保存成功，正在自动归零；归零后等待手动开始下一段",
+                                    f"Episode {saved + 1} 正在继续录制回零过程；"
+                                    "确认归零后停止并保存",
                                     auto_start=False,
                                 )
-                                if not supports_home and dashboard is not None:
-                                    dashboard.provider.finish_episode("save", index=saved)
+                            else:
+                                frame_count = stop_episode_recorder()
+                                if frame_count == 0:
+                                    dataset.clear_episode_buffer()
+                                    if dashboard is not None:
+                                        dashboard.provider.finish_episode(
+                                            "discard", index=saved + 1
+                                        )
+                                else:
+                                    if dashboard is not None:
+                                        dashboard.provider.set_phase(
+                                            "saving",
+                                            "正在保存",
+                                            can_record=False,
+                                            recording=False,
+                                        )
+                                    dataset.save_episode()
+                                    saved += 1
+                                    if dashboard is not None:
+                                        dashboard.provider.finish_episode("save", index=saved)
                         else:
+                            stop_episode_recorder()
                             dataset.clear_episode_buffer()
+                            pending_discard = True
                             if dashboard is not None:
                                 dashboard.provider.event(
                                     f"Episode {saved + 1} 已丢弃，正在自动归零",
@@ -425,15 +527,16 @@ class RealCollectionWorkflow:
                                     code="episode_discard",
                                 )
                             start_homing(
-                                f"Episode {saved + 1} 已丢弃，正在自动归零",
-                                auto_start=True,
+                                f"Episode {saved + 1} 已丢弃，正在自动归零；"
+                                "归零后等待 Menu",
+                                auto_start=False,
                             )
-                            if not supports_home and dashboard is not None:
-                                dashboard.provider.finish_episode(
-                                    "discard", index=saved + 1
-                                )
-                        active_stop = None
-                        worker = None
+                            if not supports_home:
+                                pending_discard = False
+                                if dashboard is not None:
+                                    dashboard.provider.finish_episode(
+                                        "discard", index=saved + 1
+                                    )
                     elif active_stop is None:
                         synchronizer.read(timeout_s=0.25)
                     self.dependencies.sleep(0.005)
@@ -454,9 +557,17 @@ class RealCollectionWorkflow:
                     )
                 raise
             finally:
-                if active_stop is not None:
-                    active_stop.set()
-                if worker is not None:
-                    worker.thread.join(timeout=5.0)
-                dataset.clear_episode_buffer()
+                try:
+                    if active_stop is not None:
+                        active_stop.set()
+                    if worker is not None:
+                        worker.thread.join(timeout=5.0)
+                        if worker.thread.is_alive():
+                            raise RuntimeError("episode recorder did not stop")
+                    if failures:
+                        raise RuntimeError(
+                            f"episode recorder failed: {failures[0]}"
+                        ) from failures[0]
+                finally:
+                    dataset.clear_episode_buffer()
             return saved

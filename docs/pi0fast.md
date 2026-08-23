@@ -8,7 +8,7 @@ from the legacy OpenPI JAX/Orbax PI0.5 checkout.
 Download the model into the ignored model directory:
 
 ```bash
-cd /home/user/shiyi/workspace/active/slai-manipulation
+cd /home/user/shiyi/slai-manipulation
 .venv-lerobot-v3/bin/huggingface-cli download lerobot/pi0fast-base \
   --local-dir data/models/pi0fast-base
 ```

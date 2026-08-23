@@ -58,12 +58,18 @@ def load_input_schema(path: str | Path | None = None) -> dict[str, Any]:
         components = vector.get("components")
         if not isinstance(components, list) or not components:
             raise ValueError(f"capture.{vector_name}.components must be a non-empty list")
-        for index, component in enumerate(components):
+    for index, component in enumerate(components):
             if not isinstance(component, dict) or not str(component.get("channel") or "").strip():
                 raise ValueError(f"capture.{vector_name}.components[{index}] requires a channel")
             names = component.get("names")
             if not isinstance(names, list) or not names or not all(str(name).strip() for name in names):
                 raise ValueError(f"capture.{vector_name}.components[{index}] requires names")
+            if "constant" in component:
+                constant = np.asarray(component["constant"], dtype=np.float32)
+                if constant.shape != (len(names),) or not np.isfinite(constant).all():
+                    raise ValueError(
+                        f"capture.{vector_name}.components[{index}].constant must match names"
+                    )
     policy = _mapping(data, "pi05")
     action = _mapping(policy, "action")
     _vector_spec(action, "pi05.action")
@@ -206,6 +212,19 @@ def compose_capture_vector(
     parts = []
     for index, component in enumerate(vector["components"]):
         channel_name = str(component["channel"])
+        if "constant" in component:
+            part = np.asarray(component["constant"], dtype=np.float32)
+            if part.shape != (len(component["names"]),):
+                raise ValueError(
+                    f"capture.{vector_name}.components[{index}].constant shape mismatch"
+                )
+            parts.append(part)
+            continue
+        if channel_name not in channels and channel_name == "wrist" and len(parts) == len(vector["components"]) - 1:
+            # Legacy callers recorded only UR5 + Wuji (26 DoF). Keep those
+            # vectors readable while live collection supplies real FE/RU.
+            parts.append(np.zeros(len(component["names"]), dtype=np.float32))
+            continue
         if channel_name not in channels:
             raise ValueError(f"capture.{vector_name} channel is unavailable: {channel_name}")
         source = channels[channel_name]
@@ -229,6 +248,16 @@ def split_capture_vector(
     if array.ndim != 1 or not np.isfinite(array).all():
         raise ValueError(f"capture {vector_name} must be a finite vector")
     expected = sum(len(component["names"]) for component in vector["components"])
+    constant_width = sum(
+        len(component["names"])
+        for component in vector["components"]
+        if "constant" in component
+    )
+    # Backward compatibility for pre-OpenRB collection actions/states.
+    if len(array) == expected - 2 and vector["components"][-1].get("channel") == "wrist":
+        array = np.concatenate((array, np.zeros(2, dtype=np.float32)))
+    if len(array) == expected - constant_width and constant_width:
+        array = np.concatenate((array, np.zeros(constant_width, dtype=np.float32)))
     if len(array) != expected:
         raise ValueError(f"capture {vector_name} has {len(array)} values, expected {expected}")
     result: dict[str, dict[str, np.ndarray]] = {}

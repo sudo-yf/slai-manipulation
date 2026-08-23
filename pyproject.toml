@@ -7,11 +7,17 @@ requires-python = ">=3.11"
 dependencies = [
     "msgpack>=1.0",
     "numpy>=1.26",
+    "pillow>=10.0",
+    "pyserial>=3.5",
     "pyyaml>=6.0",
     "scipy>=1.15",
 ]
 
 [project.optional-dependencies]
+pi05-train = [
+    "swanlab>=0.9,<1",
+    "wandb>=0.19",
+]
 pose-hub = [
     "fastapi>=0.115",
     "pin>=4.1,<5",
@@ -31,8 +37,12 @@ slai-infer = "slai_mi.inference:main"
 slai-mi-infer = "slai_mi.inference:main"
 slai-evaluate = "slai_mi.apps.evaluate:main"
 slai-pi05 = "slai_mi.apps.pi05:main"
+slai-deploy-real = "slai_mi.apps.deploy_real:main"
 slai-pose-hub = "slai_mi.apps.pose_hub:main"
 slai-pose-hub-bridge = "slai_mi.apps.pose_hub_bridge:main"
+slai-record-pose = "slai_mi.apps.record_pose:main"
+slai-wuji-retarget-check = "slai_mi.apps.check_wuji_retarget:main"
+slai-park-wrist = "slai_mi.apps.park_wrist:main"
 
 [dependency-groups]
 dev = [

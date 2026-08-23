@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +44,8 @@ def build_lerobot_train_config(
         "num_workers": 0,
         "save_freq": 1 if smoke else int(settings["save_interval"]),
         "log_freq": 1 if smoke else 200,
-        "wandb": {"enable": not smoke},
+        # SwanLab's WandB compatibility layer consumes LeRobot's native metrics.
+        "wandb": {"enable": not smoke, "project": "slai-pi05"},
         "peft": {
             "target_modules": "all-linear",
             "r": int(settings.get("lora_rank", 4)),
@@ -71,5 +73,30 @@ def run_lerobot_train(settings: dict[str, Any], *, smoke: bool) -> Path:
         raise FileNotFoundError(f"native PI0.5 training dataset is missing: {settings['native_v30']}")
     validate_native_v30_stats(Path(settings["native_v30"]))
     config_path = write_lerobot_train_config(settings, smoke=smoke)
-    subprocess.run([str(executable), f"--config_path={config_path}"], check=True)
+    command = [str(executable), f"--config_path={config_path}"]
+    if not smoke:
+        command = [
+            str(executable.with_name("python")),
+            "-m",
+            "slai_mi.training.lerobot_pi05",
+            f"--config_path={config_path}",
+        ]
+    subprocess.run(command, check=True)
     return Path(settings["smoke_output_dir"] if smoke else settings["training_output_dir"])
+
+
+def main() -> None:
+    """Run LeRobot with its native WandB metrics redirected to SwanLab."""
+    try:
+        import swanlab
+    except ImportError as exc:
+        raise RuntimeError("full PI0.5 training requires the pi05-train dependencies") from exc
+
+    swanlab.sync_wandb(wandb_run=False)
+    from lerobot.scripts.lerobot_train import main as lerobot_train
+
+    lerobot_train()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

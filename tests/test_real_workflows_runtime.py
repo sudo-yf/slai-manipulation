@@ -306,6 +306,7 @@ def _home_collection_workflow(
     events: list[str],
     *,
     frame_counts: list[int] | None = None,
+    episode_limit: int | None = 1,
 ) -> RealCollectionWorkflow:
     @contextmanager
     def resource(value=None):
@@ -337,6 +338,7 @@ def _home_collection_workflow(
                 self.frame_count = frame_counts[self.calls - 1]
             events.append(f"record:{self.calls}")
             stop.wait()
+            events.append(f"record-stop:{self.calls}")
 
     dependencies = CollectionDependencies(
         ur5_factory=lambda _config: resource(),
@@ -353,7 +355,7 @@ def _home_collection_workflow(
         {},
         {"task": {"instruction": "task"}},
         dependencies,
-        episode_limit=1,
+        episode_limit=episode_limit,
     )
 
 
@@ -365,10 +367,17 @@ def test_collection_save_waits_for_final_home_before_exit() -> None:
             {},  # Initial home completes.
             {0: True},  # Menu starts recording.
             {},
-            {1: True},  # Fit saves.
-            {},  # Final home completes before workflow exit.
+            {1: True},  # Fit starts the final home while recording continues.
+            {},  # Final home completes, then recording stops and saves.
         ]
     )
+    clear_home = mouse.clear_home
+
+    def observed_clear_home() -> None:
+        events.append("home-clear")
+        clear_home()
+
+    mouse.clear_home = observed_clear_home
 
     workflow = _home_collection_workflow(mouse, events)
     assert workflow.run() == 1
@@ -377,9 +386,104 @@ def test_collection_save_waits_for_final_home_before_exit() -> None:
     assert mouse.home_requests == 2
     assert mouse.home_clears == 2
     assert mouse.states == []
+    assert events.index("save") > max(
+        index for index, event in enumerate(events) if event == "home-clear"
+    )
+    assert events.index("record-stop:1") < max(
+        index for index, event in enumerate(events) if event == "home-clear"
+    )
+    assert events.index("record-stop:1") < events.index("save")
 
 
-def test_collection_discard_homes_then_automatically_restarts() -> None:
+def test_collection_lock_during_post_fit_home_does_not_save_episode() -> None:
+    events: list[str] = []
+
+    class Mouse(_HomeMouse):
+        def home_status(self) -> dict[str, object]:
+            return {
+                "at_home": self.home_requests < 2,
+                "detail": "returning after Fit",
+            }
+
+    mouse = Mouse([{}, {}, {0: True}, {}, {1: True}, {26: True}])
+    workflow = _home_collection_workflow(mouse, events)
+
+    assert workflow.run() == 0
+    assert "save" not in events
+    assert events.count("clear") == 1
+    assert events[-1] == "finalize"
+    assert mouse.home_requests == 2
+
+
+def test_collection_lock_after_post_fit_home_saves_before_finalizing() -> None:
+    events: list[str] = []
+    mouse = _HomeMouse([{}, {}, {0: True}, {}, {1: True}, {26: True}])
+    workflow = _home_collection_workflow(mouse, events)
+
+    assert workflow.run() == 1
+    assert events.count("save") == 1
+    assert events.index("save") < events.index("finalize")
+    assert mouse.home_requests == 2
+
+
+def test_collection_post_fit_home_timeout_discards_without_saving(monkeypatch) -> None:
+    import slai_mi.runtime.real_workflows as workflow_module
+
+    events: list[str] = []
+
+    class Mouse(_HomeMouse):
+        def home_status(self) -> dict[str, object]:
+            return {
+                "at_home": self.home_requests < 2,
+                "detail": "post-Fit home timeout",
+            }
+
+    mouse = Mouse([{}, {}, {0: True}, {}, {1: True}, {}, {26: True}])
+    monkeypatch.setattr(workflow_module, "HOME_TIMEOUT_S", 0.0)
+    workflow = _home_collection_workflow(mouse, events)
+
+    assert workflow.run() == 0
+    assert "save" not in events
+    assert events.count("clear") == 2  # Timeout discard plus final cleanup.
+    assert events[-1] == "finalize"
+
+
+def test_continuous_collection_saves_each_episode_only_after_home() -> None:
+    events: list[str] = []
+    mouse = _HomeMouse(
+        [
+            {},
+            {},  # Initial home completes.
+            {0: True},
+            {},
+            {1: True},
+            {},  # Episode 1 home completes, then it is saved.
+            {0: True},
+            {},
+            {1: True},
+            {},  # Episode 2 home completes, then it is saved.
+            {26: True},  # LOCK finalizes continuous collection.
+        ]
+    )
+    clear_home = mouse.clear_home
+
+    def observed_clear_home() -> None:
+        events.append("home-clear")
+        clear_home()
+
+    mouse.clear_home = observed_clear_home
+    workflow = _home_collection_workflow(mouse, events, episode_limit=None)
+
+    assert workflow.run() == 2
+    assert events.count("save") == 2
+    save_indexes = [index for index, event in enumerate(events) if event == "save"]
+    home_indexes = [index for index, event in enumerate(events) if event == "home-clear"]
+    assert home_indexes[1] < save_indexes[0] < home_indexes[2] < save_indexes[1]
+    assert mouse.home_requests == 3
+    assert events[-1] == "finalize"
+
+
+def test_collection_discard_homes_then_waits_for_menu() -> None:
     events: list[str] = []
     mouse = _HomeMouse(
         [
@@ -388,7 +492,10 @@ def test_collection_discard_homes_then_automatically_restarts() -> None:
             {0: True},
             {},
             {22: True},  # Esc discards the first attempt.
-            {},  # Home completes and attempt two auto-starts.
+            {},  # Home completes without starting a new recording.
+            {},  # Idle input still must not start recording.
+            {0: True},  # Operator explicitly starts attempt two.
+            {},
             {1: True},  # Fit saves attempt two.
             {},  # Final home completes.
         ]
@@ -404,7 +511,18 @@ def test_collection_discard_homes_then_automatically_restarts() -> None:
     assert mouse.home_clears == 3
 
 
-def test_collection_zero_frame_fit_discards_homes_and_restarts() -> None:
+def test_collection_discard_never_restarts_without_another_menu() -> None:
+    events: list[str] = []
+    mouse = _HomeMouse([{}, {}, {0: True}, {}, {22: True}, {}, {26: True}])
+    workflow = _home_collection_workflow(mouse, events)
+
+    assert workflow.run() == 0
+    assert events.count("record:1") == 1
+    assert "record:2" not in events
+    assert "save" not in events
+
+
+def test_collection_zero_frame_fit_discards_homes_then_waits_for_menu() -> None:
     events: list[str] = []
     mouse = _HomeMouse(
         [
@@ -413,7 +531,10 @@ def test_collection_zero_frame_fit_discards_homes_and_restarts() -> None:
             {0: True},
             {},
             {1: True},  # First Fit has no synchronized frames.
-            {},  # Home and automatic retry.
+            {},  # Home completes without an automatic retry.
+            {},
+            {0: True},  # Operator explicitly retries.
+            {},
             {1: True},  # Second Fit saves one frame.
             {},
         ]
@@ -427,6 +548,41 @@ def test_collection_zero_frame_fit_discards_homes_and_restarts() -> None:
     assert events.count("clear") == 2
     assert mouse.home_requests == 3
     assert mouse.home_clears == 3
+
+
+def test_collection_zero_frame_discard_never_restarts_without_menu() -> None:
+    events: list[str] = []
+    mouse = _HomeMouse([{}, {}, {0: True}, {}, {1: True}, {}, {26: True}])
+    workflow = _home_collection_workflow(mouse, events, frame_counts=[0])
+
+    assert workflow.run() == 0
+    assert events.count("record:1") == 1
+    assert "record:2" not in events
+    assert "save" not in events
+
+
+def test_collection_rotation_lock_finalizes_without_saving_active_episode() -> None:
+    events: list[str] = []
+    mouse = _HomeMouse([{}, {}, {0: True}, {}, {26: True}])
+
+    workflow = _home_collection_workflow(mouse, events)
+    assert workflow.run() == 0
+    assert events.count("record:1") == 1
+    assert "save" not in events
+    assert events.count("clear") == 1
+    assert events[-1] == "finalize"
+
+
+def test_collection_rotation_lock_finalizes_during_homing() -> None:
+    events: list[str] = []
+    mouse = _HomeMouse([{}, {26: True}], at_home=False)
+
+    workflow = _home_collection_workflow(mouse, events)
+    assert workflow.run() == 0
+    assert not any(event.startswith("record:") for event in events)
+    assert events.count("clear") == 1
+    assert events[-1] == "finalize"
+    assert mouse.home_requests == 1
 
 
 def test_collection_home_timeout_blocks_recording(monkeypatch) -> None:
@@ -485,3 +641,63 @@ def test_collection_home_timeout_blocks_recording(monkeypatch) -> None:
     assert not any(event.startswith("record:") for event in events)
     assert mouse.home_requests == 1
     assert mouse.home_clears == 1
+
+
+def test_collection_dashboard_recovers_when_home_feedback_settles(monkeypatch) -> None:
+    import slai_mi.ui.collection_dashboard as dashboard_module
+
+    phases: list[str] = []
+
+    class Mouse(_HomeMouse):
+        def __init__(self) -> None:
+            super().__init__([{}, {}, {}, {}])
+            self.home_states = iter((True, False, True))
+
+        def state(self):
+            if not self.states:
+                raise RuntimeError("stop after home recovery")
+            return super().state()
+
+        def home_status(self) -> dict[str, object]:
+            return {"at_home": next(self.home_states), "detail": "settling"}
+
+    class Provider:
+        def set_phase(self, phase, _label, **_fields):
+            phases.append(phase)
+
+        def event(self, _message, **_fields):
+            return
+
+        def set_dataset_path(self, _path):
+            return
+
+        def observe_spacemouse(self, _motion, _buttons):
+            return
+
+        def record_frame(self, _frame):
+            return
+
+    class Dashboard:
+        url = "http://127.0.0.1:8765"
+
+        def __init__(self, *_args, **_kwargs):
+            self.provider = Provider()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return
+
+    monkeypatch.setattr(dashboard_module, "CollectionDashboard", Dashboard)
+    monkeypatch.setattr(
+        dashboard_module, "DashboardSynchronizer", lambda synchronizer, _provider: synchronizer
+    )
+    workflow = _home_collection_workflow(Mouse(), [])
+    workflow.dashboard_enabled = True
+
+    with pytest.raises(RuntimeError, match="stop after home recovery"):
+        workflow.run()
+
+    blocked = phases.index("blocked")
+    assert "ready" in phases[blocked + 1 :]

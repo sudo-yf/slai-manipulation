@@ -20,6 +20,9 @@ wujihand:
   product_serial: 'LQSQJR.260430.002'
   driver_python: /home/user/venvs/robot-teleoperation/wuji-sdk/bin/python
   retarget_python: /home/user/miniconda3/envs/wuji_retargeting_camera/bin/python
+  # Dedicated 4K USB hand-tracking camera; never shared with collection cameras.
+  retarget_camera_serial: 'HB202400001'
+  retarget_camera_device: /dev/v4l/by-id/usb-HBVCAM_Camera_USB_4KHD_HBVCAM_Camera_HB202400001-video-index0
   driver_watchdog_s: 0.5
   max_temperature_c: 80.0
   thermal_warning_temperature_c: 70.0
@@ -53,6 +56,12 @@ iphone:
   robot_state_port: 5006
 
 wrist_sensor:
-  enabled: false
+  enabled: true
+  # OpenRB V2 controller and calibrated FE/RU zero are owned by the original
+  # Wrist2Wrist project; scx only invokes that existing HOME path.
+  openrb_port: auto
+  baud: 115200
+  mode: hold
+  config: third_party/02_Python_Client_CLI/closed_loop_record/wrist_output_v2.yaml
 
 adapter_plugin: slai_mi.site_adapter:make_dependencies
