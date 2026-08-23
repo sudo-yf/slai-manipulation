@@ -7,7 +7,7 @@ readonly CONFIG="${CONFIG:-$PROJECT/configs/pi05_h100_jax.yaml}"
 readonly NUM_GPUS="${NUM_GPUS:-1}"
 readonly STEPS="${STEPS:-30000}"
 readonly BATCH_SIZE="${BATCH_SIZE:-16}"
-readonly EXPERIMENT="${NUM_GPUS}gpu-${STEPS}step"
+readonly EXPERIMENT="${EXPERIMENT:-${NUM_GPUS}gpu-${STEPS}step}"
 
 [[ -x "$ENVIRONMENT/bin/python" ]] || {
     echo "Missing persistent OpenPI environment: $ENVIRONMENT" >&2
