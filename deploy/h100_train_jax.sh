@@ -19,7 +19,7 @@ readonly EXPERIMENT="${EXPERIMENT:-${NUM_GPUS}gpu-${STEPS}step}"
     exit 1
 }
 
-export HOME="$PROJECT/.h100-home"
+export HOME="${TRAIN_HOME:-$PROJECT/.h100-home}"
 export OPENPI_DATA_HOME="${OPENPI_DATA_HOME:-$PROJECT/.cache/openpi}"
 export HF_HOME="$PROJECT/.cache/huggingface"
 export XDG_CACHE_HOME="$PROJECT/.cache"
@@ -27,7 +27,6 @@ export JAX_COMPILATION_CACHE_DIR="$PROJECT/.cache/jax"
 export PYTHONPATH="$PROJECT/src:$PROJECT/third_party/openpi/src:$PROJECT/third_party/openpi/packages/openpi-client/src"
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 export SLAI_PI05_REEXEC=1
-export WANDB_MODE="${WANDB_MODE:-offline}"
 
 cd "$PROJECT"
 actual_gpus="$($ENVIRONMENT/bin/python -c 'import jax; print(jax.device_count())')"
