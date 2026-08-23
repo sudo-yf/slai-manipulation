@@ -59,6 +59,7 @@ class VendorRTDE:
             self._control_lock.__exit__(None, None, None)
             raise
         self.control = None
+        self._last_safety_check = 0.0
         if not self.receiver.isConnected():
             raise RuntimeError("UR5 RTDE receive interface did not connect")
 
@@ -108,8 +109,19 @@ class VendorRTDE:
     def speed(self, twist: list[float], acceleration: float, duration_s: float) -> None:
         self._ensure_control()
         assert self.control is not None
-        if not self.control.isPoseWithinSafetyLimits(self.receiver.getActualTCPPose()):
-            raise RuntimeError("current UR5 TCP pose is outside configured safety limits")
+        # The control loop can run at 125-250 Hz.  Repeating a safety RTDE
+        # query before every speedL call adds a full network round-trip and
+        # makes the input feel sluggish.  prepare_control performs the initial
+        # check; periodically revalidate while streaming as a fail-closed guard.
+        now = time.monotonic()
+        if now - self._last_safety_check >= 0.1:
+            if self.receiver.isEmergencyStopped():
+                raise RuntimeError("UR5 emergency stop is active")
+            if self.receiver.isProtectiveStopped():
+                raise RuntimeError("UR5 protective stop is active")
+            if not self.control.isPoseWithinSafetyLimits(self.receiver.getActualTCPPose()):
+                raise RuntimeError("current UR5 TCP pose is outside configured safety limits")
+            self._last_safety_check = now
         if not self.control.speedL(twist, acceleration, duration_s):
             raise RuntimeError("UR5 speedL command returned false")
 
@@ -119,6 +131,7 @@ class VendorRTDE:
         assert self.control is not None
         if not self.control.isPoseWithinSafetyLimits(tcp_pose):
             raise RuntimeError("current UR5 TCP pose is outside configured safety limits")
+        self._last_safety_check = time.monotonic()
 
     def speed_joint(
         self, velocity: list[float], acceleration: float, duration_s: float
@@ -193,7 +206,6 @@ class UR5WorkerBackend:
         if message_type == "write_twist":
             if not armed:
                 raise RuntimeError("UR5 worker is not armed")
-            self._state()
             twist = [float(value) for value in payload.get("twist", [])]
             if len(twist) != 6 or not all(math.isfinite(value) for value in twist):
                 raise ValueError("UR5 twist must contain six finite values")

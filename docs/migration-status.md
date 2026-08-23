@@ -52,7 +52,7 @@ status below distinguishes a tested orchestration path from a production deploym
 | Simulation teleoperation | `slai_mi.apps.teleop_sim` | runnable plugin CLI; Isaac Sim 5.1 headless smoke passed |
 | Real collection | `slai_mi.apps.collect_real` | real commissioning episode and default retarget process verified; physical SpaceMouse cap motion remains pending |
 | Simulation collection | `slai_mi.apps.collect_sim` | Isaac headless two-step NPZ smoke passed; LeRobot writer plugin pending |
-| Collection camera preview | `slai-collect-real --execute-real` (embedded) | legacy-aligned black RGB/SpaceMouse/journal UI at `127.0.0.1:8765`; recording remains gated by Menu/Fit/Esc |
+| Collection camera preview | `slai-collect-real --execute-real` (embedded) | RGB/SpaceMouse/journal UI on LAN at `0.0.0.0:8765`; recording remains gated by Menu/Fit/Esc |
 | Standalone device monitor | `slai_mi.ui.collection_frontend --live` | read-only diagnostics only; it is not the recording workflow dashboard |
 
 PI0.5 training and offline inference now have maintained execute backends. Policy output can be
@@ -90,7 +90,7 @@ smoke checkpoint is never an authorization to command the real robot.
   and the chronological recording journal at lower right. The new implementation remains an
   in-process read-only view fed by the exact `SynchronizedInputs` and recorder lifecycle used by
   `RealCollectionWorkflow`; it never opens a second set of camera handles.
-- `slai-collect-real` enables the dashboard by default on `127.0.0.1:8765`. Dry-run prints the URL;
+- `slai-collect-real` enables the dashboard by default on `0.0.0.0:8765`; LAN clients use the host's local IP. Dry-run prints the listen URL;
   real execution starts it before hardware resources and keeps recording gated by the existing
   Menu/Fit/Esc rising-edge state machine.
 - A real ready-state run reported 3/3 configured cameras, 26 schema-declared DoF, valid SpaceMouse

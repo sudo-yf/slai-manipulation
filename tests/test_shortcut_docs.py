@@ -14,6 +14,8 @@ PUBLIC_SHORTCUTS = {
     "simx",
     "sc",
     "scx",
+    "scw",
+    "scwx",
     "scc",
     "scs",
     "scsx",

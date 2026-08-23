@@ -12,10 +12,13 @@ from slai_mi.devices.spacemouse.mapping import SpeedSettings
 from slai_mi.devices.wujihand.manual_control import ManualHandSettings
 from slai_mi.site_adapter import (
     ControlledSpaceMouse,
+    NativeWristTeleopLoop,
     RealPolicyBridge,
     StationSession,
+    Wrist2WristTeleopLoop,
     _cameras,
     _task_home_joints,
+    make_teleop,
 )
 
 
@@ -170,9 +173,7 @@ def test_collection_mouse_uses_legacy_wrist_and_home_buttons():
 
 def test_station_session_loads_legacy_profile_without_watchdog_changes(monkeypatch):
     hardware = yaml.safe_load(Path("configs/hardware.yaml").read_text(encoding="utf-8"))
-    task = yaml.safe_load(
-        Path("configs/tasks/block_into_box.yaml").read_text(encoding="utf-8")
-    )
+    task = yaml.safe_load(Path("configs/tasks/block_into_box.yaml").read_text(encoding="utf-8"))
     calls = {}
 
     class Driver:
@@ -190,9 +191,7 @@ def test_station_session_loads_legacy_profile_without_watchdog_changes(monkeypat
     assert session.max_rotation_rad == 0.0
     expected = np.asarray(
         yaml.safe_load(
-            Path("configs/poses/tasks/block_into_box_start.yaml").read_text(
-                encoding="utf-8"
-            )
+            Path("configs/poses/tasks/block_into_box_start.yaml").read_text(encoding="utf-8")
         )["joint_positions"],
         dtype=float,
     )
@@ -201,6 +200,38 @@ def test_station_session_loads_legacy_profile_without_watchdog_changes(monkeypat
     assert calls["ur5"]["watchdog_s"] == 0.25
     assert calls["wuji"]["watchdog_s"] == 0.5
     assert calls["wuji"]["max_velocity_rad_s"] == 3.0
+
+
+def test_wrist_strategy_builds_ur5_and_wrist_workers_without_wuji(monkeypatch) -> None:
+    hardware = yaml.safe_load(Path("configs/hardware.yaml").read_text(encoding="utf-8"))
+    task = yaml.safe_load(Path("configs/tasks/block_into_box.yaml").read_text(encoding="utf-8"))
+    hardware["wujihand"]["enabled"] = False
+    hardware["cameras"]["enabled"] = False
+
+    class Session:
+        control_period_s = 0.008
+        spacemouse_deadzone = 0.12
+
+    monkeypatch.setattr("slai_mi.site_adapter.UR5OnlySession", lambda *_args: Session())
+    dependencies = make_teleop(hardware, task)
+
+    assert dependencies.required_devices == ("ur5", "wrist_sensor", "spacemouse")
+    assert set(dependencies.runtime_factories or {}) == {"ur5-teleop", "wrist-teleop"}
+    monkeypatch.setattr(
+        "slai_mi.site_adapter.WristMasterSlaveController",
+        lambda *_args, **_kwargs: object(),
+    )
+    wrist_factory = (dependencies.runtime_factories or {})["wrist-teleop"]
+    assert isinstance(wrist_factory(hardware, None, None), NativeWristTeleopLoop)
+
+
+def test_wrist_teleop_writes_data_outside_vendor_symlink() -> None:
+    hardware = yaml.safe_load(Path("configs/hardware.yaml").read_text(encoding="utf-8"))
+    loop = Wrist2WristTeleopLoop(hardware)
+    data_root_index = loop.command.index("--data-root") + 1
+
+    assert loop.command[data_root_index].endswith("slai-manipulation/data/wrist-teleop")
+    assert "third_party/02_Python_Client_CLI" not in loop.command[data_root_index]
 
 
 def test_uncommissioned_task_home_is_rejected(monkeypatch) -> None:

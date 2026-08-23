@@ -7,6 +7,7 @@ import copy
 import json
 import mimetypes
 import threading
+import time
 from collections.abc import Sequence
 from datetime import datetime
 from http import HTTPStatus
@@ -19,6 +20,7 @@ import yaml
 
 from slai_mi.datasets.lerobot_v3.schema import RECORDED_BUTTON_NAMES
 from slai_mi.input_schema import enabled_cameras, load_input_schema
+from slai_mi.runtime import StrategyProfileError, load_strategy_profile
 
 STATIC_ROOT = Path(__file__).with_name("static")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -90,6 +92,14 @@ class DashboardRuntime:
         with self._lock:
             return copy.deepcopy(self._provider.status())
 
+    def spacemouse_status(self) -> dict[str, Any]:
+        """Return only the latest input snapshot for the low-latency stream."""
+        with self._lock:
+            provider_method = getattr(self._provider, "spacemouse_status", None)
+            if callable(provider_method):
+                return copy.deepcopy(provider_method())
+            return copy.deepcopy(self._provider.status().get("spacemouse", {}))
+
     def camera_jpeg(self, key: str) -> bytes | None:
         with self._lock:
             frame = self._provider.camera_jpeg(key)
@@ -109,16 +119,14 @@ def load_hardware_config(path: str | Path) -> dict[str, Any]:
     return payload
 
 
-def offline_status(config: dict[str, Any]) -> dict[str, Any]:
+def offline_status(config: dict[str, Any], *, task: str = "等待采集任务") -> dict[str, Any]:
     """Build status without importing or opening any device SDK."""
-    status = dashboard_status_template(config)
+    status = dashboard_status_template(config, task=task)
     camera_enabled = bool(config.get("cameras", {}).get("enabled"))
     for camera in status["cameras"]:
         camera["error"] = "设备监测未启用" if camera_enabled else "配置中已禁用"
     status["spacemouse"]["error"] = (
-        "设备监测未启用"
-        if config.get("spacemouse", {}).get("enabled")
-        else "配置中已禁用"
+        "设备监测未启用" if config.get("spacemouse", {}).get("enabled") else "配置中已禁用"
     )
     return status
 
@@ -180,12 +188,13 @@ def dashboard_status_template(
         "dataset_path": None,
         "mode": "combined",
         "devices": {
-            "ur5": {
-                "state": "starting" if config.get("ur5", {}).get("enabled") else "inactive"
-            },
+            "ur5": {"state": "starting" if config.get("ur5", {}).get("enabled") else "inactive"},
             "wuji": {
+                "state": ("starting" if config.get("wujihand", {}).get("enabled") else "inactive")
+            },
+            "wrist": {
                 "state": (
-                    "starting" if config.get("wujihand", {}).get("enabled") else "inactive"
+                    "starting" if config.get("wrist_sensor", {}).get("enabled") else "inactive"
                 )
             },
         },
@@ -247,8 +256,16 @@ def build_handler(
     runtime = provider if isinstance(provider, DashboardRuntime) else DashboardRuntime(provider)
 
     class DashboardHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
         def do_GET(self) -> None:
             route = urlparse(self.path).path
+            if route == "/api/spacemouse/events":
+                self._send_spacemouse_stream(runtime)
+                return
+            if route == "/api/events":
+                self._send_event_stream(runtime)
+                return
             if route == "/api/status":
                 try:
                     self._send_json(runtime.status())
@@ -265,8 +282,7 @@ def build_handler(
                         payload = status.get("spacemouse", {})
                     elif route == "/api/cameras":
                         payload = {
-                            str(camera["key"]): camera
-                            for camera in status.get("cameras", [])
+                            str(camera["key"]): camera for camera in status.get("cameras", [])
                         }
                     elif route == "/api/devices":
                         payload = {
@@ -308,6 +324,13 @@ def build_handler(
                     return
                 self._send_camera_frame(runtime, key)
                 return
+            if route.startswith("/stream/") and route.endswith(".mjpg"):
+                key = unquote(route[len("/stream/") : -len(".mjpg")])
+                if not key or "/" in key or key in {".", ".."}:
+                    self._send_json({"error": "invalid camera key"}, HTTPStatus.BAD_REQUEST)
+                    return
+                self._send_camera_stream(runtime, key)
+                return
             prefix, suffix = "/api/cameras/", "/frame.jpg"
             if route.startswith(prefix) and route.endswith(suffix):
                 key = unquote(route[len(prefix) : -len(suffix)])
@@ -326,7 +349,10 @@ def build_handler(
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            cache_control = (
+                "no-cache" if target.name == "index.html" else "public, max-age=3600"
+            )
+            self.send_header("Cache-Control", cache_control)
             self.end_headers()
             self.wfile.write(body)
 
@@ -364,6 +390,75 @@ def build_handler(
                 return
             self._send_bytes(frame, "image/jpeg")
 
+        def _send_event_stream(self, source: DashboardRuntime) -> None:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            try:
+                self.wfile.write(b"retry: 500\n\n")
+                self.wfile.flush()
+                while True:
+                    payload = json.dumps(source.status(), ensure_ascii=False, separators=(",", ":"))
+                    self.wfile.write(f"data: {payload}\n\n".encode())
+                    self.wfile.flush()
+                    # Keep read-only input feedback close to SpaceMouse sample
+                    # time without tying it to the camera frame rate.
+                    time.sleep(0.02)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
+
+        def _send_spacemouse_stream(self, source: DashboardRuntime) -> None:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            try:
+                self.wfile.write(b"retry: 250\n\n")
+                self.wfile.flush()
+                while True:
+                    payload = json.dumps(
+                        source.spacemouse_status(), ensure_ascii=False, separators=(",", ":")
+                    )
+                    self.wfile.write(f"data: {payload}\n\n".encode())
+                    self.wfile.flush()
+                    time.sleep(0.01)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
+
+        def _send_camera_stream(self, source: DashboardRuntime, key: str) -> None:
+            try:
+                source.camera_jpeg(key)
+            except KeyError:
+                self._send_json({"error": "unknown camera"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-cache, no-store, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            try:
+                while True:
+                    frame = source.camera_jpeg(key)
+                    if frame is not None:
+                        header = (
+                            b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                            + str(len(frame)).encode()
+                            + b"\r\n\r\n"
+                        )
+                        self.wfile.write(header)
+                        self.wfile.write(frame)
+                        self.wfile.write(b"\r\n")
+                        self.wfile.flush()
+                    time.sleep(0.12)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
+
         def log_message(self, format: str, *args: object) -> None:
             return
 
@@ -373,9 +468,20 @@ def build_handler(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hardware-config", default="configs/hardware.yaml")
+    parser.add_argument(
+        "--strategy",
+        help="Show one configured hardware strategy without opening its devices",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--live", action="store_true", help="Open read-only physical input monitors")
+    parser.add_argument(
+        "--live", action="store_true", help="Open read-only physical input monitors"
+    )
+    parser.add_argument(
+        "--camera-only",
+        action="store_true",
+        help="With --live, leave SpaceMouse to the active teleoperation process",
+    )
     return parser
 
 
@@ -383,13 +489,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not 0 <= args.port <= 65535:
         raise SystemExit("--port must be between 0 and 65535")
+    if args.camera_only and not args.live:
+        raise SystemExit("--camera-only requires --live")
     hardware = load_hardware_config(args.hardware_config)
+    task_label = "等待采集任务"
+    if args.strategy:
+        try:
+            strategy = load_strategy_profile(args.strategy)
+        except StrategyProfileError as exc:
+            raise SystemExit(f"Dashboard strategy failed: {exc}") from exc
+        hardware = strategy.configure_hardware(hardware)
+        task_label = strategy.label
     if args.live:
         from slai_mi.ui.live_provider import factory
 
-        provider: StatusProvider = factory(hardware)
+        provider: StatusProvider = factory(hardware, monitor_spacemouse=not args.camera_only)
     else:
-        provider = OfflineStatusProvider(offline_status(hardware))
+        provider = OfflineStatusProvider(offline_status(hardware, task=task_label))
     runtime = DashboardRuntime(provider)
     runtime.start()
     server = ThreadingHTTPServer((args.host, args.port), build_handler(runtime))

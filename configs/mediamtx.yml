@@ -1,0 +1,43 @@
+logLevel: info
+logDestinations: [stdout]
+
+authMethod: internal
+
+rtsp: true
+rtspTransports: [tcp]
+rtspAddress: 127.0.0.1:8554
+
+rtmp: false
+hls: false
+srt: false
+moq: false
+playback: false
+api: true
+apiAddress: 127.0.0.1:9997
+metrics: true
+metricsAddress: 127.0.0.1:9998
+pprof: false
+
+webrtc: true
+webrtcAddress: :8889
+webrtcEncryption: false
+webrtcAllowOrigins: ["*"]
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcIPsFromInterfaces: true
+webrtcAdditionalHosts:
+  - 192.168.1.102
+  - 100.73.226.20
+  - 120.234.36.212
+  - ch-4090.tail57cdd3.ts.net
+webrtcICEServers2:
+  - url: stun:stun.l.google.com:19302
+
+pathDefaults:
+  source: publisher
+  sourceOnDemand: false
+
+paths:
+  primary: {}
+  secondary: {}
+  wrist: {}

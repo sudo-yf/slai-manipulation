@@ -15,12 +15,15 @@ from slai_mi.devices.spacemouse.buttons import BUTTON_NAME_BY_CODE
 from slai_mi.devices.spacemouse.client import SpaceMouseProcess
 from slai_mi.input_schema import enabled_cameras, load_input_schema
 from slai_mi.ui.collection_frontend import dashboard_status_template
+from slai_mi.ui.webrtc_preview import H264PreviewPublisher
 
 
 class LiveStatusProvider:
     """Monitor configured input devices without exposing any motion command."""
 
-    def __init__(self, hardware: dict[str, Any]) -> None:
+    def __init__(
+        self, hardware: dict[str, Any], *, monitor_spacemouse: bool = True
+    ) -> None:
         self.hardware = hardware
         self.schema = load_input_schema(hardware.get("input_schema"))
         image_height, image_width, _channels = self.schema["capture"]["image_shape"]
@@ -40,20 +43,43 @@ class LiveStatusProvider:
             expected_count=len(cameras),
         )
         self.capture = RealSenseCapture(configs)
-        self.mouse = SpaceMouseProcess()
+        self.preview = H264PreviewPublisher(
+            (str(camera["role"]) for camera in cameras),
+            width=int(image_width),
+            height=int(image_height),
+            fps=int(self.schema["capture"]["fps"]),
+        )
+        self.mouse = (
+            SpaceMouseProcess(deadzone=0.12, stale_timeout=0.05, rate_hz=250.0)
+            if monitor_spacemouse
+            else None
+        )
         self._frames: dict[str, Any] = {}
+        self._jpeg_cache: dict[str, tuple[float, bytes]] = {}
         self._counts = {item.name: 0 for item in configs}
         self._errors: dict[str, str] = {}
         self._started_at = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._mouse_thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._mouse_motion = np.zeros(6, dtype=np.float32)
+        self._mouse_buttons: dict[int, bool] = {}
+        self._mouse_sample_at = 0.0
         self._last_mouse_activity: float | None = None
 
     def start(self) -> None:
         self.capture.start()
+        self.preview.start()
         try:
-            self.mouse.start()
+            if self.mouse is not None:
+                self.mouse.start()
+                self._mouse_thread = threading.Thread(
+                    target=self._read_mouse_loop,
+                    name="dashboard-spacemouse",
+                    daemon=True,
+                )
+                self._mouse_thread.start()
         except (OSError, RuntimeError) as exc:
             self._errors["spacemouse"] = str(exc)
         self._started_at = time.monotonic()
@@ -61,10 +87,31 @@ class LiveStatusProvider:
         self._thread = threading.Thread(target=self._read_loop, name="dashboard-inputs", daemon=True)
         self._thread.start()
 
+    def _read_mouse_loop(self) -> None:
+        while not self._stop.is_set() and self.mouse is not None:
+            try:
+                motion, buttons = self.mouse.state()
+                now = time.monotonic()
+                with self._lock:
+                    self._mouse_motion = np.asarray(motion, dtype=np.float32)
+                    self._mouse_buttons = {int(key): bool(value) for key, value in buttons.items()}
+                    self._mouse_sample_at = now
+                if bool(np.any(np.abs(self._mouse_motion) > 0.0)):
+                    self._last_mouse_activity = now
+            except RuntimeError as exc:
+                self._errors["spacemouse"] = str(exc)
+                return
+            time.sleep(0.001)
+
     def _read_loop(self) -> None:
         while not self._stop.is_set():
             try:
                 frames = self.capture.read(0.5)
+                for role, frame in frames.items():
+                    try:
+                        self.preview.publish(role, frame.color)
+                    except (KeyError, TypeError, ValueError):
+                        pass
                 with self._lock:
                     self._frames.update(frames)
                     for role in frames:
@@ -80,8 +127,13 @@ class LiveStatusProvider:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
+        if self._mouse_thread is not None:
+            self._mouse_thread.join(timeout=2.0)
+            self._mouse_thread = None
         self.capture.stop()
-        self.mouse.stop()
+        self.preview.stop()
+        if self.mouse is not None:
+            self.mouse.stop()
 
     def status(self) -> dict[str, Any]:
         status = dashboard_status_template(self.hardware, task="独立设备监测")
@@ -119,11 +171,16 @@ class LiveStatusProvider:
                     "drops": 0,
                 }
             )
-        try:
-            motion, buttons = self.mouse.state()
+        if self.mouse is None:
+            motion, buttons = np.zeros(6), {}
+            mouse_sample_at = 0.0
+            mouse_error = "SpaceMouse 由遥操作进程占用"
+        else:
+            with self._lock:
+                motion = self._mouse_motion.copy()
+                buttons = dict(self._mouse_buttons)
+                mouse_sample_at = self._mouse_sample_at
             mouse_error = self._errors.get("spacemouse")
-        except RuntimeError as exc:
-            motion, buttons, mouse_error = np.zeros(6), {}, str(exc)
         active = bool(np.any(np.asarray(motion)))
         if active:
             self._last_mouse_activity = time.monotonic()
@@ -147,8 +204,8 @@ class LiveStatusProvider:
                 "valid": mouse_error is None,
                 "age_ms": (
                     None
-                    if self._last_mouse_activity is None
-                    else (time.monotonic() - self._last_mouse_activity) * 1000.0
+                    if mouse_sample_at <= 0.0
+                    else max(0.0, time.monotonic() - mouse_sample_at) * 1000.0
                 ),
                 "last_activity_ms": (
                     None
@@ -160,17 +217,58 @@ class LiveStatusProvider:
         )
         return status
 
+    def spacemouse_status(self) -> dict[str, Any]:
+        if self.mouse is None:
+            motion, buttons = np.zeros(6), {}
+            mouse_sample_at = 0.0
+            mouse_error = "SpaceMouse 由遥操作进程占用"
+        else:
+            with self._lock:
+                motion = self._mouse_motion.copy()
+                buttons = dict(self._mouse_buttons)
+                mouse_sample_at = self._mouse_sample_at
+            mouse_error = self._errors.get("spacemouse")
+        now = time.monotonic()
+        active = bool(np.any(np.asarray(motion)))
+        return {
+            "connected": mouse_error is None,
+            "device": "SpaceMouse Pro",
+            "motion": np.asarray(motion, dtype=float).tolist(),
+            "buttons": {
+                BUTTON_NAME_BY_CODE.get(int(key), str(key)): bool(value)
+                for key, value in buttons.items()
+            },
+            "active": active,
+            "valid": mouse_error is None,
+            "age_ms": None if mouse_sample_at <= 0.0 else max(0.0, now - mouse_sample_at) * 1000.0,
+            "last_activity_ms": (
+                None
+                if self._last_mouse_activity is None
+                else max(0.0, now - self._last_mouse_activity) * 1000.0
+            ),
+            "error": mouse_error,
+        }
+
     def camera_jpeg(self, key: str) -> bytes | None:
+        now = time.monotonic()
         with self._lock:
             frame = self._frames.get(key)
+            cached = self._jpeg_cache.get(key)
         if key not in self._counts:
             raise KeyError(key)
         if frame is None:
             return None
+        if cached is not None and now - cached[0] < 0.1:
+            return cached[1]
         output = BytesIO()
-        Image.fromarray(np.asarray(frame.color, dtype=np.uint8)).save(output, format="JPEG", quality=85)
-        return output.getvalue()
+        Image.fromarray(np.asarray(frame.color, dtype=np.uint8)).save(output, format="JPEG", quality=68)
+        encoded = output.getvalue()
+        with self._lock:
+            self._jpeg_cache[key] = (now, encoded)
+        return encoded
 
 
-def factory(hardware: dict[str, Any]) -> LiveStatusProvider:
-    return LiveStatusProvider(hardware)
+def factory(
+    hardware: dict[str, Any], *, monitor_spacemouse: bool = True
+) -> LiveStatusProvider:
+    return LiveStatusProvider(hardware, monitor_spacemouse=monitor_spacemouse)

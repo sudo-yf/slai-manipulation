@@ -24,6 +24,7 @@ from slai_mi.ui.collection_frontend import (
     build_handler,
     dashboard_status_template,
 )
+from slai_mi.ui.webrtc_preview import H264PreviewPublisher
 
 
 class CollectionDashboardProvider:
@@ -31,6 +32,14 @@ class CollectionDashboardProvider:
 
     def __init__(self, hardware: dict[str, Any], task: str) -> None:
         self.schema = load_input_schema(hardware.get("input_schema"))
+        image_height, image_width, _channels = self.schema["capture"]["image_shape"]
+        cameras = enabled_cameras(self.schema)
+        self.preview = H264PreviewPublisher(
+            (str(camera["role"]) for camera in cameras),
+            width=int(image_width),
+            height=int(image_height),
+            fps=int(self.schema["capture"]["fps"]),
+        )
         self._status = dashboard_status_template(hardware, task=task)
         self._lock = threading.RLock()
         self._frames: dict[str, bytes] = {}
@@ -42,22 +51,25 @@ class CollectionDashboardProvider:
         self._sync_valid = 0
         self._last_sync_ready = False
         self._temperature_level = "unknown"
-        self._camera_counts = {str(item["role"]): 0 for item in enabled_cameras(self.schema)}
+        self._camera_counts = {str(item["role"]): 0 for item in cameras}
 
     def start(self) -> None:
+        self.preview.start()
         self.event("数采监控台已启动，等待真实设备数据")
 
     def stop(self) -> None:
-        return
+        self.preview.stop()
 
     def status(self) -> dict[str, Any]:
         with self._lock:
             status = copy.deepcopy(self._status)
         if self._recording_started_at is not None:
-            status["episode"]["elapsed_s"] = round(
-                time.monotonic() - self._recording_started_at, 1
-            )
+            status["episode"]["elapsed_s"] = round(time.monotonic() - self._recording_started_at, 1)
         return status
+
+    def spacemouse_status(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._status.get("spacemouse", {}))
 
     def camera_jpeg(self, key: str) -> bytes | None:
         if key not in self._camera_counts:
@@ -201,15 +213,14 @@ class CollectionDashboardProvider:
             "state",
             {
                 **{name: inputs.channels[name].value for name in state_names},
-                **(
-                    {"wrist": inputs.channels["wrist"].value}
-                    if "wrist" in inputs.channels
-                    else {}
-                ),
+                **({"wrist": inputs.channels["wrist"].value} if "wrist" in inputs.channels else {}),
             },
         )
         mouse = inputs.channels[command_name].value
-        temperature = getattr(inputs.channels["wuji"].value, "temperature", None)
+        wuji_sample = inputs.channels.get("wuji")
+        temperature = (
+            getattr(wuji_sample.value, "temperature", None) if wuji_sample is not None else None
+        )
         axes = np.asarray(mouse.axes, dtype=np.float32)
         buttons = np.asarray(mouse.buttons, dtype=bool)
         recorded_buttons = {
@@ -223,11 +234,15 @@ class CollectionDashboardProvider:
         for index, camera in enumerate(cameras):
             role = str(camera["role"])
             sample = inputs.cameras[role]
+            try:
+                self.preview.publish(role, sample.value)
+            except (KeyError, TypeError, ValueError):
+                pass
             self._camera_counts[role] += 1
             if encode_previews:
                 output = BytesIO()
                 Image.fromarray(np.asarray(sample.value, dtype=np.uint8)).save(
-                    output, format="JPEG", quality=78
+                    output, format="JPEG", quality=68
                 )
                 encoded[role] = output.getvalue()
             current = next(item for item in self._status["cameras"] if item["key"] == role)
@@ -236,7 +251,10 @@ class CollectionDashboardProvider:
                     **current,
                     "connected": True,
                     "valid": bool(validity[index])
-                    and (role == primary_role or skew.get(role, 0.0) <= float(synchronization["max_camera_skew_ms"])),
+                    and (
+                        role == primary_role
+                        or skew.get(role, 0.0) <= float(synchronization["max_camera_skew_ms"])
+                    ),
                     "fps": self._camera_counts[role] / elapsed,
                     "sequence": int(sample.sequence),
                     "age_ms": round(ages[index], 1),
@@ -278,16 +296,13 @@ class CollectionDashboardProvider:
                 "error": None,
             }
             device_offset = len(camera_roles)
-            self._status["devices"] = {
-                "ur5": {
-                    "state": "active" if inputs.channels["ur5"].valid else "error",
-                    "age_ms": round(ages[device_offset + state_names.index("ur5")], 1),
-                },
-                "wuji": {
-                    "state": "active" if inputs.channels["wuji"].valid else "error",
-                    "age_ms": round(ages[device_offset + state_names.index("wuji")], 1),
-                },
-            }
+            devices = dict(self._status["devices"])
+            for index, name in enumerate(state_names):
+                devices[name] = {
+                    "state": "active" if inputs.channels[name].valid else "error",
+                    "age_ms": round(ages[device_offset + index], 1),
+                }
+            self._status["devices"] = devices
             self._status["sync"] = {
                 **self._status["sync"],
                 "ready": sync_ready,
@@ -330,9 +345,7 @@ class CollectionDashboardProvider:
                 )
 
     def _touch(self) -> None:
-        self._status["updated_at"] = datetime.now().astimezone().isoformat(
-            timespec="milliseconds"
-        )
+        self._status["updated_at"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
 
 
 class DashboardSynchronizer:

@@ -111,12 +111,23 @@ class HardwareProcessSupervisor:
         operation: Callable[[], T],
         *,
         interval_s: float = 0.1,
+        check_after: bool = True,
     ) -> T:
         """Run a blocking device call while heartbeating every other driver."""
         if device_id not in self.drivers:
             raise KeyError(device_id)
         if interval_s <= 0:
             raise ValueError("heartbeat interval must be positive")
+
+        # The supervisor already owns a heartbeat thread for every armed
+        # driver.  Motion streaming uses this fast path to avoid creating a
+        # short-lived peer-heartbeat thread for every 8 ms command.
+        if not check_after:
+            try:
+                return operation()
+            except Exception as exc:
+                self.fail_closed(exc)
+                raise RuntimeError(f"hardware supervisor failed closed: {exc}") from exc
 
         stopped = threading.Event()
         heartbeat_failures: list[BaseException] = []
@@ -151,7 +162,11 @@ class HardwareProcessSupervisor:
         if failure is not None:
             self.fail_closed(failure)
             raise RuntimeError(f"hardware supervisor failed closed: {failure}") from failure
-        self.check()
+        # High-frequency motion writes already have a continuously running
+        # heartbeat thread.  The optional immediate check is useful for slow
+        # setup/policy calls, but adds a full IPC round-trip to every command.
+        if check_after:
+            self.check()
         return result  # type: ignore[return-value]
 
     def fail_closed(self, failure: BaseException) -> None:

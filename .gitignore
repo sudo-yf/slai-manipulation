@@ -11,6 +11,7 @@ data/training/*
 data/normalization/*
 data/models/*
 data/pose-recordings/*
+data/wrist-teleop/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/lerobot/.gitkeep

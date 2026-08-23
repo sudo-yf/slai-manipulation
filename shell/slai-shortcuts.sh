@@ -28,6 +28,12 @@ sim()  { _srun slai-teleop-sim "$@"; }
 simx() { _srun slai-teleop-sim "$@" --run; }
 
 sc()   { _scollect "$@"; }
+scw()  {
+    _scollect \
+        --strategy ur5e_wrist_8dof_collection \
+        --task configs/tasks/block_into_box.yaml \
+        "$@"
+}
 scx()  {
     local arg episode_mode=
     for arg in "$@"; do
@@ -42,6 +48,27 @@ scx()  {
     fi
 }
 scc()  { _scollect "$@" --continuous --execute-real --confirm I_UNDERSTAND_REAL_ROBOT_MOTION; }
+scwx() (
+    restore_ui=
+    if systemctl --user is-active --quiet slai-collection-ui.service; then
+        systemctl --user stop slai-collection-ui.service || exit
+        restore_ui=1
+    fi
+    trap 'if [ -n "$restore_ui" ]; then systemctl --user start slai-collection-ui.service; fi' EXIT
+    episode_args=--continuous
+    for arg in "$@"; do
+        case "$arg" in
+            --episodes|--episodes=*|--continuous) episode_args= ;;
+        esac
+    done
+    _scollect \
+        --strategy ur5e_wrist_8dof_collection \
+        --task configs/tasks/block_into_box.yaml \
+        ${episode_args:+$episode_args} \
+        "$@" \
+        --execute-real \
+        --confirm I_UNDERSTAND_REAL_ROBOT_MOTION
+)
 scs()  { _srun slai-collect-sim "$@"; }
 scsx() { _srun slai-collect-sim "$@" --run; }
 

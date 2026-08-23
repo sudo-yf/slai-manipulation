@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly PROJECT=/mnt/afs/250010074/yifan/slai-manipulation
+readonly PROJECT="${PROJECT:-/mnt/afs/250010074/yifan/slai-manipulation}"
 readonly ENVIRONMENT="$PROJECT/.venv-openpi"
-readonly CONFIG="$PROJECT/configs/pi05_h100_jax.yaml"
-readonly NUM_GPUS="${NUM_GPUS:-4}"
+readonly CONFIG="${CONFIG:-$PROJECT/configs/pi05_h100_jax.yaml}"
+readonly NUM_GPUS="${NUM_GPUS:-1}"
 readonly STEPS="${STEPS:-30000}"
 readonly BATCH_SIZE="${BATCH_SIZE:-16}"
 readonly EXPERIMENT="${NUM_GPUS}gpu-${STEPS}step"
 
 [[ -x "$ENVIRONMENT/bin/python" ]] || {
     echo "Missing persistent OpenPI environment: $ENVIRONMENT" >&2
+    exit 1
+}
+
+[[ -f "$CONFIG" ]] || {
+    echo "Missing PI0.5 JAX config: $CONFIG" >&2
     exit 1
 }
 

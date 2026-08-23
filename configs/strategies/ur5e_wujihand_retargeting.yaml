@@ -1,0 +1,19 @@
+schema_version: 1
+strategy:
+  id: ur5e_wujihand_retargeting
+  label: UR5e + WujiHand 相机 Retargeting
+  status: ready
+  supported_apps: [teleop_real, record_pose]
+  required_hardware: [ur5, wujihand, spacemouse]
+  disabled_hardware: [wrist_sensor]
+  inputs: [spacemouse, wuji_retarget_camera]
+  outputs: [ur5e, wujihand]
+  control:
+    ur5e: spacemouse_twist
+    wujihand: camera_retargeting
+  physical_dof: 26
+dataset:
+  state_schema: real_v1
+  recorded_dof: 26
+  synthetic_channels: []
+  note: record_pose 只保存命名关节姿态；该组不是 LeRobot episode 正式数采入口。

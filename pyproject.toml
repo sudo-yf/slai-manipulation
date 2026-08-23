@@ -43,6 +43,7 @@ slai-pose-hub-bridge = "slai_mi.apps.pose_hub_bridge:main"
 slai-record-pose = "slai_mi.apps.record_pose:main"
 slai-wuji-retarget-check = "slai_mi.apps.check_wuji_retarget:main"
 slai-park-wrist = "slai_mi.apps.park_wrist:main"
+slai-strategies = "slai_mi.apps.strategies:main"
 
 [dependency-groups]
 dev = [

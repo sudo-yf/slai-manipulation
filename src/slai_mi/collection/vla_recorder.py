@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,9 +14,7 @@ from slai_mi.datasets.lerobot_v3.contract import validate_frame
 from slai_mi.datasets.lerobot_v3.schema import (
     ACTION,
     ACTUAL_TCP_SPEED,
-    CAMERA_SCHEMAS,
     CAMERA_SKEW_MS,
-    CAPTURE_SCHEMA,
     COMMAND_SOURCE_NAME,
     DEVICE_TIMESTAMPS_S,
     HOST_RECEIVE_TIMESTAMPS_S,
@@ -28,11 +27,10 @@ from slai_mi.datasets.lerobot_v3.schema import (
     SOURCE_SEQUENCES,
     SPACEMOUSE_AXES,
     SPACEMOUSE_BUTTONS,
-    STATE_SOURCE_NAMES,
     UR5_TARGET_QD,
     VALIDITY_MASK,
 )
-from slai_mi.input_schema import compose_capture_vector
+from slai_mi.input_schema import compose_capture_vector, enabled_cameras
 from slai_mi.rotation import convert_tcp_pose
 
 
@@ -67,47 +65,57 @@ class SynchronizedInputs:
         return self.channels[COMMAND_SOURCE_NAME]
 
 
-def assemble_frame(inputs: SynchronizedInputs, task_prompt: str, *, now: float | None = None) -> dict[str, object]:
+def assemble_frame(
+    inputs: SynchronizedInputs, task_prompt: str, *, now: float | None = None
+) -> dict[str, object]:
     """Build and validate one canonical frame from timestamp-aligned inputs."""
+    return assemble_configured_frame(
+        inputs,
+        task_prompt,
+        schema=INPUT_SCHEMA,
+        validator=validate_frame,
+        now=now,
+    )
+
+
+def assemble_configured_frame(
+    inputs: SynchronizedInputs,
+    task_prompt: str,
+    *,
+    schema: Mapping[str, Any],
+    validator: Callable[[dict[str, Any]], None],
+    now: float | None = None,
+) -> dict[str, object]:
+    """Build a frame using the selected strategy's vector and source schema."""
     current = time.monotonic() if now is None else float(now)
-    camera_sources = tuple(inputs.cameras[str(camera["role"])] for camera in CAMERA_SCHEMAS)
-    state_sources = tuple(inputs.channels[name] for name in STATE_SOURCE_NAMES)
-    sources = (*camera_sources, *state_sources, inputs.channels[COMMAND_SOURCE_NAME])
+    capture = schema["capture"]
+    cameras = enabled_cameras(schema)
+    state_names = tuple(str(item["name"]) for item in schema["synchronization"]["state_channels"])
+    command_name = str(schema["synchronization"]["command_channel"]["name"])
+    camera_sources = tuple(inputs.cameras[str(camera["role"])] for camera in cameras)
+    state_sources = tuple(inputs.channels[name] for name in state_names)
+    sources = (*camera_sources, *state_sources, inputs.channels[command_name])
     ur5 = inputs.ur5.value
-    mouse = inputs.spacemouse.value
+    mouse = inputs.channels[command_name].value
     frame: dict[str, object] = {
         **{
             str(camera["dataset_key"]): np.asarray(inputs.cameras[str(camera["role"])].value)
-            for camera in CAMERA_SCHEMAS
+            for camera in cameras
         },
         OBSERVATION_STATE: compose_capture_vector(
-            INPUT_SCHEMA,
+            schema,
             "state",
-            {
-                **{name: inputs.channels[name].value for name in STATE_SOURCE_NAMES},
-                **(
-                    {"wrist": inputs.channels["wrist"].value}
-                    if "wrist" in inputs.channels
-                    else {}
-                ),
-            },
+            {name: inputs.channels[name].value for name in state_names},
         ),
         OBSERVATION_TCP_POSE: convert_tcp_pose(
             ur5.actual_tcp_pose,
-            source_representation=str(CAPTURE_SCHEMA["tcp_pose"]["source_representation"]),
-            target_representation=str(CAPTURE_SCHEMA["tcp_pose"]["dataset_representation"]),
+            source_representation=str(capture["tcp_pose"]["source_representation"]),
+            target_representation=str(capture["tcp_pose"]["dataset_representation"]),
         ),
         ACTION: compose_capture_vector(
-            INPUT_SCHEMA,
+            schema,
             "action",
-            {
-                **{name: inputs.channels[name].value for name in STATE_SOURCE_NAMES},
-                **(
-                    {"wrist": inputs.channels["wrist"].value}
-                    if "wrist" in inputs.channels
-                    else {}
-                ),
-            },
+            {name: inputs.channels[name].value for name in state_names},
         ),
         UR5_TARGET_QD: np.asarray(ur5.target_qd, dtype=np.float32),
         ACTUAL_TCP_SPEED: np.asarray(ur5.actual_tcp_speed, dtype=np.float32),
@@ -115,11 +123,11 @@ def assemble_frame(inputs: SynchronizedInputs, task_prompt: str, *, now: float |
             [
                 abs(
                     inputs.cameras[str(camera["role"])].host_timestamp_s
-                    - inputs.cameras[str(CAPTURE_SCHEMA["primary_timeline_role"])].host_timestamp_s
+                    - inputs.cameras[str(capture["primary_timeline_role"])].host_timestamp_s
                 )
                 * 1000.0
-                for camera in CAMERA_SCHEMAS
-                if camera["role"] != CAPTURE_SCHEMA["primary_timeline_role"]
+                for camera in cameras
+                if camera["role"] != capture["primary_timeline_role"]
             ],
             dtype=np.float32,
         ),
@@ -141,7 +149,7 @@ def assemble_frame(inputs: SynchronizedInputs, task_prompt: str, *, now: float |
         SPACEMOUSE_BUTTONS: np.asarray(mouse.buttons, dtype=np.int64),
         "task": task_prompt,
     }
-    validate_frame(frame)
+    validator(frame)
     return frame
 
 
@@ -153,6 +161,7 @@ class EpisodeRecorder:
     timeout_s: float = 1.0
     monotonic: Any = time.monotonic
     on_frame: Any | None = None
+    assembler: Any = assemble_frame
     frame_count: int = field(default=0, init=False)
 
     def record(self, stop_event: threading.Event) -> int:
@@ -160,7 +169,7 @@ class EpisodeRecorder:
         self.frame_count = 0
         while not stop_event.is_set():
             inputs = self.synchronizer.read(timeout_s=self.timeout_s)
-            frame = assemble_frame(inputs, self.task_prompt, now=self.monotonic())
+            frame = self.assembler(inputs, self.task_prompt, now=self.monotonic())
             self.dataset.add_frame(frame)
             if self.on_frame is not None:
                 self.on_frame(frame)

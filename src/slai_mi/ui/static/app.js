@@ -1,179 +1,471 @@
+const CAMERA_ORDER = ["secondary", "primary", "wrist"];
+const CAMERA_LABELS = {
+  secondary: "CAM 01 - LEFT",
+  primary: "CAM 00 - CENTER MAIN",
+  wrist: "CAM 02 - RIGHT",
+};
 const cameraFigures = new Map();
+const cameraPreviews = new Map();
 
-function cameraLabel(camera) {
-  const datasetKey = String(camera.dataset_key || "");
-  if (datasetKey.includes("d435_primary")) return "D435 Primary RGB";
-  if (datasetKey.includes("d435_secondary")) return "D435 Secondary RGB";
-  if (datasetKey.includes("d405")) return "D405 RGB";
-  return camera.label || camera.role || camera.key;
+function sortedCameras(cameras) {
+  return [...cameras].sort((left, right) => {
+    const leftIndex = CAMERA_ORDER.indexOf(left.key);
+    const rightIndex = CAMERA_ORDER.indexOf(right.key);
+    return (leftIndex < 0 ? 99 : leftIndex) - (rightIndex < 0 ? 99 : rightIndex);
+  });
 }
 
 function ensureCameras(cameras) {
   const grid = document.getElementById("camera-grid");
   const template = document.getElementById("camera-template");
-  for (const camera of cameras) {
-    if (cameraFigures.has(camera.key)) continue;
-    const figure = template.content.firstElementChild.cloneNode(true);
-    const image = figure.querySelector("img");
-    figure.dataset.cameraFigure = camera.key;
-    figure.querySelector(".camera-label").textContent = cameraLabel(camera);
-    figure.querySelector(".camera-age").dataset.cameraAge = camera.key;
-    image.dataset.camera = camera.key;
-    image.alt = `${cameraLabel(camera)} 实时画面`;
-    grid.appendChild(figure);
-    cameraFigures.set(camera.key, figure);
-    refreshFrame(image);
+  for (const camera of sortedCameras(cameras)) {
+    let figure = cameraFigures.get(camera.key);
+    if (!figure) {
+      figure = template.content.firstElementChild.cloneNode(true);
+      figure.dataset.camera = camera.key;
+      const image = figure.querySelector("img");
+      image.dataset.camera = camera.key;
+      image.alt = `${CAMERA_LABELS[camera.key] || camera.label || camera.key} live RGB feed`;
+      grid.appendChild(figure);
+      cameraFigures.set(camera.key, figure);
+      cameraPreviews.set(camera.key, createCameraPreview(figure));
+    }
+    figure.querySelector(".camera-label").textContent =
+      CAMERA_LABELS[camera.key] || camera.label || camera.role || camera.key;
+    const resolution = Array.isArray(camera.resolution) ? camera.resolution.join("x") : "--";
+    const fps = Number(camera.fps || 0);
+    figure.querySelector(".camera-format").textContent = `${resolution} / ${fps.toFixed(0)}fps`;
   }
   for (const [key, figure] of cameraFigures) {
     if (!cameras.some((camera) => camera.key === key)) {
+      cameraPreviews.get(key)?.stop();
+      cameraPreviews.delete(key);
       figure.remove();
       cameraFigures.delete(key);
     }
   }
-}
-
-function refreshFrame(image) {
-  const refresh = () => window.setTimeout(() => {
-    image.src = `/frame/${encodeURIComponent(image.dataset.camera)}.jpg?t=${Date.now()}`;
-  }, 50);
-  image.addEventListener("load", refresh);
-  image.addEventListener("error", () => window.setTimeout(refresh, 500));
-  refresh();
-}
-
-async function refreshCameraStatus() {
-  try {
-    const response = await fetch("/api/cameras", {cache: "no-store"});
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const cameras = await response.json();
-    const values = Object.values(cameras);
-    ensureCameras(values);
-    for (const camera of values) {
-      const label = document.querySelector(`[data-camera-age="${CSS.escape(camera.key)}"]`);
-      if (!label) continue;
-      const online = Boolean(camera.connected && camera.age_ms != null);
-      label.textContent = online ? `${Number(camera.age_ms).toFixed(0)} ms` : "OFFLINE";
-      label.classList.toggle("online", online);
-      label.classList.toggle("slow", online && camera.age_ms >= 100);
-    }
-  } catch (_) {
-    for (const label of document.querySelectorAll("[data-camera-age]")) {
-      label.textContent = "OFFLINE";
-      label.classList.remove("online", "slow");
-    }
-  } finally {
-    window.setTimeout(refreshCameraStatus, 100);
+  const orderedFigures = sortedCameras(cameras)
+    .map((camera) => cameraFigures.get(camera.key))
+    .filter(Boolean);
+  const currentFigures = [...grid.children];
+  if (orderedFigures.some((figure, index) => currentFigures[index] !== figure)) {
+    grid.replaceChildren(...orderedFigures);
   }
+}
+
+function whepUrl(role) {
+  const encoded = encodeURIComponent(role);
+  if (window.location.hostname === "record.leai.me") {
+    return `/${encoded}/whep`;
+  }
+  const host = window.location.hostname.includes(":")
+    ? `[${window.location.hostname}]`
+    : window.location.hostname;
+  return `${window.location.protocol}//${host}:8889/${encoded}/whep`;
+}
+
+function isLanPage() {
+  const host = window.location.hostname;
+  if (host === "localhost" || host === "::1" || host.startsWith("127.")) return true;
+  if (host.startsWith("10.") || host.startsWith("192.168.")) return true;
+  const match = host.match(/^172\.(\d+)\./);
+  return Boolean(match && Number(match[1]) >= 16 && Number(match[1]) <= 31);
+}
+
+function createCameraPreview(figure) {
+  const image = figure.querySelector("img");
+  const video = figure.querySelector("video");
+  const role = image.dataset.camera;
+  let peer = null;
+  let request = null;
+  let retryTimer = null;
+  let snapshotTimer = null;
+  let retryDelay = 250;
+  let stopped = false;
+  let generation = 0;
+
+  const setFrame = (visible, webrtc) => {
+    figure.dataset.frame = String(visible);
+    figure.dataset.webrtc = String(webrtc);
+  };
+  const loadSnapshot = () => {
+    if (stopped || document.hidden) return;
+    image.src = `/api/cameras/${encodeURIComponent(role)}/frame.jpg?t=${Date.now()}`;
+  };
+  const scheduleRetry = () => {
+    if (stopped || document.hidden || retryTimer != null) return;
+    const delay = retryDelay;
+    retryDelay = Math.min(retryDelay * 2, 2000);
+    retryTimer = window.setTimeout(() => {
+      retryTimer = null;
+      connectWebRTC();
+    }, delay);
+  };
+  const scheduleSnapshot = () => {
+    if (stopped || document.hidden || snapshotTimer != null) return;
+    snapshotTimer = window.setTimeout(() => {
+      snapshotTimer = null;
+      loadSnapshot();
+    }, 250);
+  };
+  const closePeer = () => {
+    generation += 1;
+    request?.abort();
+    request = null;
+    if (peer) {
+      peer.onconnectionstatechange = null;
+      peer.close();
+      peer = null;
+    }
+    video.srcObject = null;
+  };
+  const connectWebRTC = async () => {
+    if (stopped || document.hidden) return;
+    closePeer();
+    const currentGeneration = generation;
+    if (!("RTCPeerConnection" in window)) {
+      loadSnapshot();
+      return;
+    }
+    try {
+      const connection = new RTCPeerConnection({
+        iceServers: isLanPage() ? [] : [{urls: "stun:stun.l.google.com:19302"}],
+      });
+      peer = connection;
+      const showDecodedFrame = () => {
+        const showVideo = () => {
+          retryDelay = 250;
+          setFrame(true, true);
+        };
+        if ("requestVideoFrameCallback" in video) {
+          video.requestVideoFrameCallback(showVideo);
+        } else {
+          showVideo();
+        }
+      };
+      const startPlayback = () => {
+        video.play().then(showDecodedFrame).catch(() => {});
+      };
+      video.onloadedmetadata = startPlayback;
+      video.onplaying = showDecodedFrame;
+      connection.addTransceiver("video", {direction: "recvonly"});
+      connection.ontrack = (event) => {
+        if (event.streams[0]) video.srcObject = event.streams[0];
+      };
+      connection.onconnectionstatechange = () => {
+        if (peer === connection && ["failed", "disconnected", "closed"].includes(connection.connectionState)) {
+          setFrame(false, false);
+          loadSnapshot();
+          scheduleRetry();
+        }
+      };
+      const offer = await connection.createOffer();
+      await connection.setLocalDescription(offer);
+      await new Promise((resolve) => {
+        if (connection.iceGatheringState === "complete") return resolve();
+        const done = () => {
+          if (connection.iceGatheringState === "complete") {
+            connection.removeEventListener("icegatheringstatechange", done);
+            resolve();
+          }
+        };
+        connection.addEventListener("icegatheringstatechange", done);
+        window.setTimeout(resolve, isLanPage() ? 350 : 1500);
+      });
+      if (currentGeneration !== generation) return;
+      const controller = new AbortController();
+      request = controller;
+      const response = await fetch(whepUrl(role), {
+        method: "POST",
+        headers: {"Content-Type": "application/sdp"},
+        body: connection.localDescription.sdp,
+        signal: controller.signal,
+      });
+      if (request === controller) request = null;
+      if (currentGeneration !== generation) return;
+      if (!response.ok) throw new Error(`WHEP HTTP ${response.status}`);
+      await connection.setRemoteDescription({type: "answer", sdp: await response.text()});
+      if (video.readyState >= 1) startPlayback();
+    } catch (_) {
+      if (stopped || document.hidden || currentGeneration !== generation) return;
+      closePeer();
+      setFrame(false, false);
+      loadSnapshot();
+      scheduleRetry();
+    }
+  };
+  image.addEventListener("load", () => {
+    if (snapshotTimer != null) {
+      window.clearTimeout(snapshotTimer);
+      snapshotTimer = null;
+    }
+    if (figure.dataset.webrtc !== "true") setFrame(true, false);
+  });
+  image.addEventListener("error", () => {
+    if (figure.dataset.webrtc !== "true") setFrame(false, false);
+    scheduleSnapshot();
+  });
+  video.addEventListener("error", () => {
+    setFrame(false, false);
+    loadSnapshot();
+    scheduleRetry();
+  });
+  loadSnapshot();
+  connectWebRTC();
+
+  return {
+    start() {
+      if (!stopped) return;
+      stopped = false;
+      retryDelay = 250;
+      loadSnapshot();
+      connectWebRTC();
+    },
+    stop() {
+      stopped = true;
+      if (retryTimer != null) window.clearTimeout(retryTimer);
+      if (snapshotTimer != null) window.clearTimeout(snapshotTimer);
+      retryTimer = null;
+      snapshotTimer = null;
+      closePeer();
+      setFrame(false, false);
+    },
+  };
+}
+
+function renderCameraStatus(cameras) {
+  ensureCameras(cameras);
+  for (const camera of cameras) {
+    const figure = cameraFigures.get(camera.key);
+    if (!figure) continue;
+    const online = Boolean(camera.connected && camera.valid && camera.age_ms != null);
+    const slow = online && Number(camera.age_ms) >= 100;
+    figure.dataset.online = String(online);
+    if (!online) figure.dataset.frame = "false";
+    figure.dataset.slow = String(slow);
+    figure.querySelector(".camera-latency").textContent = online
+      ? `Lat: ${Number(camera.age_ms).toFixed(0)}ms`
+      : "Lat: OFFLINE";
+    const resolution = Array.isArray(camera.resolution) ? camera.resolution.join("x") : "--";
+    figure.querySelector(".camera-format").textContent =
+      `${resolution} / ${Number(camera.fps || 0).toFixed(0)}fps`;
+  }
+  const onlineCount = cameras.filter((camera) => camera.connected && camera.valid).length;
+  document.getElementById("system-label").textContent =
+    `Sys: ${onlineCount === cameras.length && cameras.length ? "Nominal" : `${onlineCount}/${cameras.length} Cameras`}`;
 }
 
 function eventTime(value) {
   const text = String(value || "--:--:--");
-  return text.includes("T") ? text.split("T")[1].slice(0, 8) : text.slice(-8);
+  if (text.includes("T")) return text.split("T")[1].slice(0, 12);
+  return text.slice(-12);
 }
 
-async function refreshRecordingStatus() {
-  try {
-    const response = await fetch("/api/recording", {cache: "no-store"});
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    const badge = document.querySelector(".record-badge");
-    badge.dataset.state = payload.state.code;
-    document.querySelector(".record-label").textContent = payload.state.label;
-    document.querySelector(".record-detail").textContent = payload.state.detail || "";
-    const temperature = payload.temperature || {};
-    const temperatureBox = document.querySelector(".temperature-status");
-    const temperatureValue = document.querySelector(".temperature-value");
-    const temperatureDetail = document.querySelector(".temperature-detail");
-    const temperatureLevel = String(temperature.level || "unknown");
-    temperatureBox.dataset.temperatureLevel = temperatureLevel;
-    temperatureValue.textContent = temperature.max_c == null ? "--" : `${Number(temperature.max_c).toFixed(1)} °C`;
-    temperatureDetail.textContent = temperatureLevel === "critical"
-      ? `临界温度，限制 ${Number(temperature.limit_c || 80).toFixed(0)} °C`
-      : temperatureLevel === "warning"
-        ? `温度警告，临界 ${Number(temperature.critical_c || 75).toFixed(0)} °C`
-        : temperatureLevel === "normal"
-          ? `正常，警告线 ${Number(temperature.warning_c || 70).toFixed(0)} °C`
-          : "监测尚未就绪";
-    const list = document.querySelector(".event-list");
-    const shouldFollow = list.scrollHeight - list.scrollTop - list.clientHeight < 20;
-    list.replaceChildren(...payload.events.map((event) => {
-      const row = document.createElement("div");
-      row.className = "event";
-      row.dataset.level = event.level;
-      const timestamp = document.createElement("span");
-      timestamp.className = "event-time";
-      timestamp.textContent = eventTime(event.time);
-      const mark = document.createElement("span");
-      mark.className = "event-mark";
-      mark.textContent = "●";
-      const message = document.createElement("span");
-      message.textContent = event.message;
-      row.append(timestamp, mark, message);
-      return row;
-    }));
-    if (shouldFollow) list.scrollTop = list.scrollHeight;
-  } catch (_) {
-    const badge = document.querySelector(".record-badge");
-    badge.dataset.state = "blocked";
-    document.querySelector(".record-label").textContent = "状态断开";
-  } finally {
-    window.setTimeout(refreshRecordingStatus, 100);
+function renderEvents(events) {
+  const list = document.querySelector(".event-list");
+  const shouldFollow = list.scrollHeight - list.scrollTop - list.clientHeight < 24;
+  if (!events.length) {
+    const empty = document.createElement("div");
+    empty.className = "event empty";
+    empty.textContent = "Waiting for collection events.";
+    list.replaceChildren(empty);
+    return;
   }
+  list.replaceChildren(...events.map((event) => {
+    const row = document.createElement("div");
+    row.className = "event";
+    row.dataset.level = event.level || "info";
+    const timestamp = document.createElement("span");
+    timestamp.className = "event-time";
+    timestamp.textContent = eventTime(event.time);
+    const level = document.createElement("span");
+    level.className = "event-level";
+    level.textContent = event.code || event.level || "info";
+    const message = document.createElement("span");
+    message.className = "event-message";
+    message.textContent = event.message || "";
+    row.append(timestamp, level, message);
+    return row;
+  }));
+  if (shouldFollow) list.scrollTop = list.scrollHeight;
 }
 
-async function refreshDevices() {
+let lastEventSignature = "";
+
+function renderRecordingStatus(status) {
+  const indicator = document.querySelector(".record-indicator");
+  indicator.dataset.state = status.phase || "starting";
+  const episode = status.episode || {};
+  const detail = status.recording
+    ? `${episode.valid_frames || 0} 帧 · ${Number(episode.elapsed_s || 0).toFixed(1)} 秒`
+    : (status.can_record ? "等待 MENU" : "");
+  document.getElementById("record-label").textContent = detail
+    ? `${status.phase_label || "准备中"} · ${detail}`
+    : (status.phase_label || "准备中");
+  const temperature = status.temperature || {};
+  const temperatureBox = document.querySelector(".temperature-status");
+  temperatureBox.dataset.level = String(temperature.level || "unknown");
+  temperatureBox.querySelector("strong").textContent = temperature.max_c == null
+    ? "--"
+    : `${Number(temperature.max_c).toFixed(1)}°C`;
+  const events = Array.isArray(status.events) ? [...status.events].reverse() : [];
+  renderEvents(events);
+}
+
+function renderDevices(devices) {
+  const names = {ur5: "UR5", wuji: "WujiHand", wrist: "Wrist"};
+  const labels = {active: "ON", inactive: "OFF", starting: "STARTING", error: "ERROR"};
+  document.getElementById("device-summary").textContent = ["ur5", "wuji", "wrist"]
+    .map((name) => `${names[name]} ${labels[devices?.[name]?.state] || "ERROR"}`)
+    .join(" · ");
+}
+
+async function loadSpaceMouseMap() {
+  const host = document.getElementById("spacemouse-container");
   try {
-    const response = await fetch("/api/devices", {cache: "no-store"});
+    const response = await fetch("/spacemouse-input-map.svg?v=20260823-4");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    document.querySelector(".capture-mode").textContent = String(payload.mode || "combined").toUpperCase();
-    for (const name of ["ur5", "wuji"]) {
-      const item = document.querySelector(`[data-device="${name}"]`);
-      const state = payload.devices?.[name] || {state: "error"};
-      const label = state.state === "active" ? "ACTIVE" : state.state === "inactive" ? "NOT ENABLED" : state.state === "starting" ? "STARTING" : "ERROR";
-      item.textContent = `${name === "ur5" ? "UR5" : "Wuji"} ${label}`;
-      item.classList.toggle("starting", state.state === "starting");
-      item.classList.toggle("inactive", state.state === "inactive");
-      item.classList.toggle("error", state.state === "error");
+    host.innerHTML = await response.text();
+    const svg = host.querySelector("svg");
+    if (svg) {
+      svg.removeAttribute("width");
+      svg.removeAttribute("height");
+      svg.setAttribute("focusable", "false");
+      requestAnimationFrame(positionSpaceMousePuck);
     }
   } catch (_) {
-    for (const item of document.querySelectorAll("[data-device]")) item.classList.add("error");
-  } finally {
-    window.setTimeout(refreshDevices, 250);
+    host.textContent = "Input map unavailable";
   }
 }
 
-async function refreshMouse() {
-  try {
-    const response = await fetch("/api/spacemouse", {cache: "no-store"});
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const state = await response.json();
-    document.querySelector(".status").classList.toggle("online", state.connected);
-    document.querySelector(".age").textContent = state.age_ms == null ? "--" : `${Number(state.age_ms).toFixed(0)} ms`;
-    const motion = Array.from({length: 6}, (_, index) =>
-      Math.max(-1, Math.min(1, Number(state.motion?.[index] || 0))));
-    const puck = document.querySelector(".puck");
-    puck.style.transform = `translate(${motion[1] * 14}px, ${motion[0] * 16}px)
-      scale(${1 + motion[2] * 0.13}) rotateX(${-motion[3] * 18}deg)
-      rotateY(${motion[4] * 18}deg) rotateZ(${motion[5] * 24}deg)`;
-    puck.classList.toggle("active", motion.some((value) => Math.abs(value) > 0.01));
-    document.querySelector(".motion-values").textContent =
-      `T ${motion.slice(0, 3).map((value) => value.toFixed(2)).join(" ")} · ` +
-      `R ${motion.slice(3).map((value) => value.toFixed(2)).join(" ")}`;
-    for (const button of document.querySelectorAll("[data-button]")) {
-      const aliases = {rear: "r", front: "f"};
-      button.classList.toggle("pressed", Boolean(
-        state.buttons?.[button.dataset.button] || state.buttons?.[aliases[button.dataset.button]],
-      ));
+function positionSpaceMousePuck() {
+  const wrap = document.querySelector(".spacemouse-wrap");
+  const host = document.getElementById("spacemouse-container");
+  const puck = document.getElementById("spacemouse-puck");
+  const svg = host?.querySelector("svg");
+  if (!wrap || !puck || !svg) return;
+  const wrapRect = wrap.getBoundingClientRect();
+  const svgRect = svg.getBoundingClientRect();
+  // center-ring is cx=252, cy=268 in a 508x502 viewBox.
+  puck.style.left = `${svgRect.left - wrapRect.left + svgRect.width * (252 / 508)}px`;
+  puck.style.top = `${svgRect.top - wrapRect.top + svgRect.height * (268 / 502)}px`;
+}
+
+function setSpaceMouseButtons(buttons) {
+  const aliases = {rear: "r", front: "f"};
+  for (const button of document.querySelectorAll("#spacemouse-container [data-button]")) {
+    const name = button.dataset.button;
+    button.dataset.pressed = String(Boolean(buttons?.[name] || buttons?.[aliases[name]]));
+  }
+}
+
+function setMotion(motion) {
+  const values = Array.from({length: 6}, (_, index) =>
+    Math.max(-1, Math.min(1, Number(motion?.[index] || 0))));
+  const puck = document.getElementById("spacemouse-puck");
+  // Keep input values unchanged, but make small real movements visible
+  // inside the center ring.
+  const travel = 44;
+  puck.style.transform = `translate(calc(-50% + ${values[1] * travel}px), calc(-50% + ${values[0] * travel}px)) ` +
+    `scale(${1 + values[2] * 0.1}) rotateX(${-values[3] * 18}deg) ` +
+    `rotateY(${values[4] * 18}deg) rotateZ(${values[5] * 22}deg)`;
+  puck.classList.toggle("active", values.some((value) => Math.abs(value) > 0.01));
+  for (const [index, value] of values.entries()) {
+    document.querySelector(`[data-axis="${index}"] output`).value = value.toFixed(2);
+  }
+}
+
+function renderMouse(state) {
+  const stateBox = document.querySelector(".spacemouse-state");
+  stateBox.dataset.connected = String(Boolean(state.connected && state.valid));
+  stateBox.title = state.error || "Read-only status from the SLAI collection process";
+  document.getElementById("spacemouse-connection-state").textContent = state.connected
+    ? (state.active ? "SpaceMouse Pro · ACTIVE" : "SpaceMouse Pro")
+    : "SpaceMouse Pro · WAITING";
+  document.getElementById("spacemouse-age").textContent = state.age_ms == null
+    ? "--"
+    : `${Number(state.age_ms).toFixed(0)}ms`;
+  setMotion(state.motion);
+  setSpaceMouseButtons(state.buttons);
+}
+
+function renderStatus(status) {
+  renderCameraStatus(Array.isArray(status.cameras) ? status.cameras : []);
+  const eventSignature = JSON.stringify([
+    status.phase,
+    status.recording,
+    status.episode,
+    status.temperature,
+    status.events,
+  ]);
+  if (eventSignature !== lastEventSignature) {
+    lastEventSignature = eventSignature;
+    renderRecordingStatus(status);
+  }
+  renderDevices(status.devices || {});
+}
+
+window.addEventListener("resize", positionSpaceMousePuck, {passive: true});
+document.addEventListener("visibilitychange", () => {
+  for (const preview of cameraPreviews.values()) {
+    if (document.hidden) preview.stop();
+    else preview.start();
+  }
+});
+window.addEventListener("pagehide", () => {
+  for (const preview of cameraPreviews.values()) preview.stop();
+});
+
+let pollingStarted = false;
+
+function startStatusPolling() {
+  if (pollingStarted) return;
+  pollingStarted = true;
+  const poll = async () => {
+    try {
+      const response = await fetch("/api/status", {cache: "no-store"});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      renderStatus(await response.json());
+    } catch (_) {
+      document.getElementById("system-label").textContent = "Sys: Offline";
+    } finally {
+      window.setTimeout(poll, 250);
     }
-  } catch (_) {
-    document.querySelector(".status").classList.remove("online");
-  } finally {
-    window.setTimeout(refreshMouse, 50);
-  }
+  };
+  poll();
 }
 
-refreshCameraStatus();
-refreshRecordingStatus();
-refreshDevices();
-refreshMouse();
+function connectStatusStream() {
+  if (!("EventSource" in window)) {
+    startStatusPolling();
+    return;
+  }
+  const stream = new EventSource("/api/events");
+  let received = false;
+  const fallbackTimer = window.setTimeout(() => {
+    if (!received) {
+      stream.close();
+      startStatusPolling();
+    }
+  }, 4000);
+  stream.onmessage = (event) => {
+    received = true;
+    renderStatus(JSON.parse(event.data));
+  };
+  stream.onerror = () => {
+    if (received) document.getElementById("system-label").textContent = "Sys: Reconnecting";
+  };
+}
+
+function connectSpaceMouseStream() {
+  if (!("EventSource" in window)) return;
+  const stream = new EventSource("/api/spacemouse/events");
+  stream.onmessage = (event) => {
+    renderMouse(JSON.parse(event.data));
+  };
+  stream.onerror = () => {};
+}
+
+loadSpaceMouseMap();
+connectStatusStream();
+connectSpaceMouseStream();

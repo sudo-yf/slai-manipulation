@@ -17,6 +17,7 @@ from slai_mi.collection.pose_recorder import HoldGestureDetector, PoseJournal
 from slai_mi.datasets.lerobot_v3.schema import UR5_JOINT_NAMES, WUJI_JOINT_NAMES
 from slai_mi.devices.spacemouse.buttons import Button
 from slai_mi.devices.spacemouse.client import SpaceMouseProcess
+from slai_mi.runtime import StrategyProfileError, load_strategy_profile
 from slai_mi.runtime.real_workflows import validate_real_hardware_config
 from slai_mi.site_adapter import (
     CachedSpaceMouse,
@@ -37,12 +38,18 @@ RECORD_CONTROLS = {
     "capture": int(Button.MENU),
     "finish": int(Button.FIT),
 }
+DEFAULT_STRATEGY = "ur5e_wujihand_retargeting"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hardware-config", default="configs/hardware.yaml")
     parser.add_argument("--task", default="configs/tasks/block_into_box.yaml")
+    parser.add_argument(
+        "--strategy",
+        default=DEFAULT_STRATEGY,
+        help="Strategy id from configs/strategies or an explicit YAML path",
+    )
     parser.add_argument("--output-root", default="data/pose-recordings")
     parser.add_argument("--hold-seconds", type=float, default=0.8)
     parser.add_argument("--execute-real", action="store_true", help="Enable physical teleoperation")
@@ -96,8 +103,8 @@ def _run_recorder(
     mouse = CachedSpaceMouse(
         SpaceMouseProcess(
             deadzone=session.spacemouse_deadzone,
-            stale_timeout=0.1,
-            rate_hz=1.0 / session.control_period_s,
+            stale_timeout=0.05,
+            rate_hz=max(250.0, 1.0 / session.control_period_s),
         ),
         session.control_period_s,
     )
@@ -209,6 +216,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     hardware = load_yaml(args.hardware_config)
     task = load_yaml(args.task)
     require_real_robot_confirmation(args.execute_real, args.confirm)
+    try:
+        strategy = load_strategy_profile(args.strategy)
+        strategy.validate_for(
+            "record_pose", hardware=hardware, task=task, execute=args.execute_real
+        )
+        hardware = strategy.configure_hardware(hardware)
+    except StrategyProfileError as exc:
+        raise SystemExit(f"Pose recording strategy failed: {exc}") from exc
     print_plan(
         {
             "app": "record_pose",
@@ -221,6 +236,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "simulation_dimension": 28,
             "hardware_motion": "enabled" if args.execute_real else "disabled",
             "wujihand_control": "camera_retargeting",
+            **strategy.plan_fields(),
         }
     )
     if not args.execute_real:

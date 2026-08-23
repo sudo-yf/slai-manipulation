@@ -1,65 +1,78 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
-    <title>采集相机预览</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <meta name="color-scheme" content="light" />
+    <title>SLAI-teleop</title>
+    <link rel="stylesheet" href="/styles.css?v=20260823-4" />
   </head>
   <body>
-    <div class="device-mode">
-      <span class="capture-mode">COMBINED</span>
-      <span class="device-state" data-device="ur5">UR5 --</span>
-      <span class="device-state" data-device="wuji">Wuji --</span>
-    </div>
-    <div class="record-badge" data-state="starting">
-      <span class="record-dot"></span>
-      <span class="record-label">准备中</span>
-      <span class="record-detail"></span>
-    </div>
-    <main>
-      <div class="camera-grid" id="camera-grid"></div>
-      <section class="mouse">
-        <div class="mouse-head">
-          <span class="status"></span><strong>SpaceMouse</strong><span class="age">--</span>
+    <main class="workspace">
+      <section class="camera-grid" id="camera-grid" aria-label="Live camera feeds"></section>
+
+      <section class="operator-grid">
+        <div class="glass-panel input-panel">
+          <div class="panel-head">
+            <h2>Input Map</h2>
+            <div class="spacemouse-state">
+              <span class="connection-dot" aria-hidden="true"></span>
+              <span id="spacemouse-connection-state">SpaceMouse Pro</span>
+              <span id="spacemouse-age">--</span>
+            </div>
+          </div>
+          <div class="spacemouse-wrap">
+            <div id="spacemouse-container" role="img" aria-label="Read-only SpaceMouse Pro physical input map"></div>
+            <span id="spacemouse-puck" aria-hidden="true"></span>
+          </div>
+          <div class="axis-strip" aria-label="SpaceMouse six degree-of-freedom values">
+            <span data-axis="0"><b>X</b><output>0.00</output></span>
+            <span data-axis="1"><b>Y</b><output>0.00</output></span>
+            <span data-axis="2"><b>Z</b><output>0.00</output></span>
+            <span data-axis="3"><b>RX</b><output>0.00</output></span>
+            <span data-axis="4"><b>RY</b><output>0.00</output></span>
+            <span data-axis="5"><b>RZ</b><output>0.00</output></span>
+          </div>
         </div>
-        <div class="device" aria-label="SpaceMouse Pro 实时输入示意图">
-          <span class="device-shell"></span><span class="puck-base"></span><span class="puck"></span>
-          <button class="key" data-button="one" style="--x:13%;--y:16%;--w:16%;--h:11%;--r:-18deg">1</button>
-          <button class="key" data-button="two" style="--x:27%;--y:8%;--w:15%;--h:10%;--r:-12deg">2</button>
-          <button class="key" data-button="three" style="--x:59%;--y:8%;--w:15%;--h:10%;--r:12deg">3</button>
-          <button class="key" data-button="home" style="--x:73%;--y:16%;--w:16%;--h:11%;--r:18deg">4</button>
-          <button class="key" data-button="esc" style="--x:11%;--y:29%;--w:17%;--h:8%">ESC</button>
-          <button class="key" data-button="shift" style="--x:10%;--y:38%;--w:11%;--h:10%;--r:-8deg">SHIFT</button>
-          <button class="key" data-button="ctrl" style="--x:20%;--y:38%;--w:13%;--h:9%">CTRL</button>
-          <button class="key" data-button="alt" style="--x:14%;--y:47%;--w:17%;--h:8%;--r:-8deg">ALT</button>
-          <button class="key" data-button="menu" style="--x:15%;--y:56%;--w:12%;--h:7%;--r:-12deg">MENU</button>
-          <button class="key" data-button="roll_cw" style="--x:70%;--y:30%;--w:10%;--h:9%;--r:-7deg">ROLL</button>
-          <button class="key" data-button="t" style="--x:80%;--y:31%;--w:9%;--h:10%;--r:5deg">T</button>
-          <button class="key" data-button="rotation_lock" style="--x:74%;--y:39%;--w:12%;--h:10%">LOCK</button>
-          <button class="key" data-button="front" style="--x:69%;--y:47%;--w:11%;--h:9%;--r:7deg">F</button>
-          <button class="key" data-button="rear" style="--x:80%;--y:47%;--w:10%;--h:9%;--r:8deg">R</button>
-          <button class="key" data-button="fit" style="--x:73%;--y:56%;--w:12%;--h:7%;--r:12deg">FIT</button>
-        </div>
-        <span class="motion-values">T 0.00 0.00 0.00 · R 0.00 0.00 0.00</span>
-      </section>
-      <section class="event-panel">
-        <div class="event-title">采集日志</div>
-        <div class="event-list"><div class="event empty">等待采集进程事件</div></div>
-        <div class="temperature-status" data-temperature-level="unknown">
-          <span class="temperature-label">Wuji 温度</span>
-          <span class="temperature-value">--</span>
-          <span class="temperature-detail">监测尚未就绪</span>
+
+        <div class="glass-panel event-panel">
+          <div class="panel-head">
+            <h2>System Events Log</h2>
+            <div class="system-state">
+              <span class="system-indicator"><i></i><span id="system-label">Sys: Starting</span></span>
+              <span class="record-indicator" data-state="starting"><i></i><span id="record-label">Preparing</span></span>
+            </div>
+          </div>
+          <div class="event-table" role="log" aria-live="polite">
+            <div class="event-columns" aria-hidden="true">
+              <span>Timestamp</span><span>Level</span><span>Message</span>
+            </div>
+            <div class="event-list">
+              <div class="event empty">Waiting for collection events.</div>
+            </div>
+          </div>
+          <div class="health-line">
+            <span id="device-summary">UR5 -- · WujiHand -- · Wrist --</span>
+            <span class="temperature-status" data-level="unknown">Wuji Temp: <strong>--</strong></span>
+          </div>
         </div>
       </section>
     </main>
+
     <template id="camera-template">
-      <figure>
-        <figcaption><span class="camera-label"></span><span class="camera-age">--</span></figcaption>
-        <img alt="实时 RGB" />
+      <figure class="camera-feed" data-online="false" data-frame="false">
+        <video autoplay muted playsinline></video>
+        <img alt="Live RGB camera feed" />
+        <span class="camera-empty">WAITING FOR CAMERA</span>
+        <div class="feed-overlays">
+          <span class="camera-title"><i aria-hidden="true"></i><span class="camera-label"></span></span>
+          <span class="camera-stats">
+            <span class="camera-format">--</span>
+            <span class="camera-latency">Lat: --</span>
+          </span>
+        </div>
       </figure>
     </template>
-    <script src="/app.js" defer></script>
+    <script src="/app.js?v=20260823-7" defer></script>
   </body>
 </html>

@@ -6,11 +6,14 @@ import importlib.util
 import json
 import math
 import os
+import signal
 import subprocess
+import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from functools import partial
 from multiprocessing import shared_memory
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +22,16 @@ from typing import Any
 import numpy as np
 import yaml
 
-from slai_mi.collection.vla_recorder import EpisodeRecorder, SourceSample, SynchronizedInputs
+from slai_mi.collection.vla_recorder import (
+    EpisodeRecorder,
+    SourceSample,
+    SynchronizedInputs,
+    assemble_configured_frame,
+)
+from slai_mi.datasets.lerobot_v3.configured import (
+    ConfiguredDatasetContract,
+    create_configured_dataset,
+)
 from slai_mi.datasets.lerobot_v3.schema import UR5_JOINT_NAMES, WUJI_JOINT_NAMES
 from slai_mi.datasets.lerobot_v3.writer import create_dataset
 from slai_mi.devices.cameras import CameraConfig, RealSenseCapture, validate_camera_set
@@ -37,6 +49,7 @@ from slai_mi.devices.ur5.geometry import (
 )
 from slai_mi.devices.ur5.process import UR5DriverProcess
 from slai_mi.devices.wrist_sensor.openrb_v2 import OpenRBWristV2
+from slai_mi.devices.wrist_sensor.teleop import WristMasterSlaveController
 from slai_mi.devices.wujihand.filters import OneEuroFilter
 from slai_mi.devices.wujihand.manual_control import (
     AccelerationLimitedTrajectory,
@@ -186,13 +199,10 @@ class StationSession:
         self.grasp_hand_target = _hand_preset(task, "grasp")
         presets = task.get("hand_presets")
         has_auxiliary = isinstance(presets, dict) and all(
-            str(presets.get(name) or "")
-            for name in ("auxiliary_open", "auxiliary_grasp")
+            str(presets.get(name) or "") for name in ("auxiliary_open", "auxiliary_grasp")
         )
         self.auxiliary_open_hand_target = (
-            _hand_preset(task, "auxiliary_open")
-            if has_auxiliary
-            else self.open_hand_target.copy()
+            _hand_preset(task, "auxiliary_open") if has_auxiliary else self.open_hand_target.copy()
         )
         self.auxiliary_grasp_hand_target = (
             _hand_preset(task, "auxiliary_grasp")
@@ -212,12 +222,8 @@ class StationSession:
             product_serial=str(wuji.get("product_serial", "")),
             watchdog_s=float(wuji.get("driver_watchdog_s", 0.5)),
             max_temperature_c=min(float(wuji.get("max_temperature_c", 80.0)), 80.0),
-            thermal_warning_temperature_c=float(
-                wuji.get("thermal_warning_temperature_c", 70.0)
-            ),
-            thermal_critical_temperature_c=float(
-                wuji.get("thermal_critical_temperature_c", 75.0)
-            ),
+            thermal_warning_temperature_c=float(wuji.get("thermal_warning_temperature_c", 70.0)),
+            thermal_critical_temperature_c=float(wuji.get("thermal_critical_temperature_c", 75.0)),
             limit_margin_rad=max(float(wuji.get("limit_margin_rad", 0.03)), 0.03),
             max_effort_fraction=min(float(wuji.get("max_effort_fraction", 0.65)), 0.65),
             max_velocity_rad_s=min(
@@ -228,7 +234,10 @@ class StationSession:
         wrist = _section(hardware, "wrist_sensor")
         self.wrist = (
             OpenRBWristV2(
-                wrist.get("config", "third_party/02_Python_Client_CLI/closed_loop_record/wrist_output_v2.yaml"),
+                wrist.get(
+                    "config",
+                    "third_party/02_Python_Client_CLI/closed_loop_record/wrist_output_v2.yaml",
+                ),
                 port=str(wrist.get("openrb_port", "auto")),
                 baud=int(wrist.get("baud", 115200)),
                 mode=str(wrist.get("mode", "closed_loop")),
@@ -277,14 +286,11 @@ class StationSession:
             if not self.supervisor.armed:
                 self.supervisor.arm()
 
-    def write_ur5_twist(
-        self, twist: Any, *, acceleration: float, duration_s: float
-    ) -> None:
+    def write_ur5_twist(self, twist: Any, *, acceleration: float, duration_s: float) -> None:
         self.supervisor.call_with_peer_heartbeats(
             "ur5",
-            lambda: self.ur5.write_twist(
-                twist, acceleration=acceleration, duration_s=duration_s
-            ),
+            lambda: self.ur5.write_twist(twist, acceleration=acceleration, duration_s=duration_s),
+            check_after=False,
         )
 
     def read_ur5_state(self) -> dict[str, Any]:
@@ -310,8 +316,87 @@ class StationSession:
 
     def prepare_ur5_control(self) -> None:
         """Finish the potentially slow RTDE setup before arming motion."""
+        self.supervisor.call_with_peer_heartbeats("ur5", self.ur5.prepare_control)
+
+    def write_ur5_joint_velocity(
+        self, velocity: Any, *, acceleration: float, duration_s: float
+    ) -> None:
         self.supervisor.call_with_peer_heartbeats(
-            "ur5", self.ur5.prepare_control
+            "ur5",
+            lambda: self.ur5.write_joint_velocity(
+                velocity, acceleration=acceleration, duration_s=duration_s
+            ),
+            check_after=False,
+        )
+
+    def stop_ur5_motion(self) -> None:
+        self.supervisor.call_with_peer_heartbeats("ur5", self.ur5.stop_motion)
+
+    def write_wuji_positions(self, positions: Any) -> None:
+        self.supervisor.call_with_peer_heartbeats(
+            "wujihand", lambda: self.wuji.write_positions(positions)
+        )
+
+
+class UR5OnlySession:
+    """Own the UR5 driver for groups that intentionally exclude WujiHand."""
+
+    def __init__(self, hardware: dict[str, Any], task: dict[str, Any]) -> None:
+        ur5 = _section(hardware, "ur5")
+        profile = _control_profile(task)
+        motion = _section(profile, "motion")
+        linear = min(float(ur5.get("max_linear_m_s", MAX_LINEAR_M_S)), MAX_LINEAR_M_S)
+        angular = min(float(ur5.get("max_angular_rad_s", MAX_ANGULAR_RAD_S)), MAX_ANGULAR_RAD_S)
+        self.speed_settings = SpeedSettings(
+            translation=float(motion["translation_speed"]),
+            rotation=float(motion["rotation_speed"]),
+            boost_translation=float(motion["precision_translation_speed"]),
+            boost_rotation=float(motion["precision_rotation_speed"]),
+        )
+        if (
+            max(self.speed_settings.translation, self.speed_settings.boost_translation) > linear
+            or max(self.speed_settings.rotation, self.speed_settings.boost_rotation) > angular
+        ):
+            raise ValueError("task SpaceMouse speed exceeds the hardware safety ceiling")
+        self.control_period_s = 1.0 / float(motion["control_hz"])
+        self.ur5_acceleration = float(motion["acceleration"])
+        self.wrist_3_jog_speed = float(motion["wrist_3_jog_speed"])
+        self.home_joint_speed = float(motion["home_joint_speed"])
+        self.max_offset_m = float(motion["max_offset_mm"]) / 1000.0
+        self.max_rotation_rad = math.radians(float(motion["max_rotation_deg"]))
+        self.spacemouse_deadzone = float(motion["deadzone"])
+        self.ur5_home_joints = _task_home_joints(task)[:6].copy()
+        self.ur5 = UR5DriverProcess(
+            python=Path(ur5["driver_python"]),
+            host=str(ur5["host"]),
+            watchdog_s=float(ur5.get("driver_watchdog_s", 0.25)),
+            max_linear_m_s=linear,
+            max_angular_rad_s=angular,
+        )
+        self.supervisor = HardwareProcessSupervisor({"ur5": self.ur5})
+
+    @contextmanager
+    def lease(self, *, arm: bool = True):
+        self.supervisor.start()
+        try:
+            if arm:
+                self.supervisor.arm()
+            yield self
+        finally:
+            self.supervisor.stop()
+
+    def read_ur5_state(self) -> dict[str, Any]:
+        try:
+            return self.ur5.read_state()
+        except BaseException as exc:
+            self.supervisor.fail_closed(exc)
+            raise
+
+    def write_ur5_twist(self, twist: Any, *, acceleration: float, duration_s: float) -> None:
+        self.supervisor.call_with_peer_heartbeats(
+            "ur5",
+            lambda: self.ur5.write_twist(twist, acceleration=acceleration, duration_s=duration_s),
+            check_after=False,
         )
 
     def write_ur5_joint_velocity(
@@ -322,15 +407,76 @@ class StationSession:
             lambda: self.ur5.write_joint_velocity(
                 velocity, acceleration=acceleration, duration_s=duration_s
             ),
+            check_after=False,
         )
 
     def stop_ur5_motion(self) -> None:
         self.supervisor.call_with_peer_heartbeats("ur5", self.ur5.stop_motion)
 
-    def write_wuji_positions(self, positions: Any) -> None:
-        self.supervisor.call_with_peer_heartbeats(
-            "wujihand", lambda: self.wuji.write_positions(positions)
+
+class Wrist2WristTeleopLoop:
+    """Run the verified ESP32-to-OpenRB program under the shared stop condition."""
+
+    def __init__(self, hardware: dict[str, Any]) -> None:
+        wrist = _section(hardware, "wrist_sensor")
+        script = (
+            PROJECT_ROOT
+            / "third_party/02_Python_Client_CLI/closed_loop_record/record_wrist_output_v2_teleop.py"
         )
+        self.command = [
+            sys.executable,
+            str(script),
+            "--teleop-port",
+            str(wrist.get("teleop_port", "auto")),
+            "--openrb-port",
+            str(wrist.get("openrb_port", "auto")),
+            "--baud",
+            str(int(wrist.get("baud", 115200))),
+            "--config",
+            str(PROJECT_ROOT / str(wrist.get("config"))),
+            "--data-root",
+            str(PROJECT_ROOT / "data/wrist-teleop"),
+        ]
+        self.process: subprocess.Popen[str] | None = None
+
+    def run(self, stop_event: threading.Event) -> None:
+        environment = os.environ.copy()
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        self.process = subprocess.Popen(self.command, cwd=PROJECT_ROOT, env=environment, text=True)
+        try:
+            while self.process.poll() is None and not stop_event.wait(0.1):
+                pass
+            if self.process.poll() is None:
+                self.process.send_signal(signal.SIGINT)
+            try:
+                return_code = self.process.wait(timeout=35.0)
+            except subprocess.TimeoutExpired:
+                self.process.terminate()
+                return_code = self.process.wait(timeout=5.0)
+            if return_code != 0 and not stop_event.is_set():
+                raise RuntimeError(f"Wrist2Wrist teleop exited with status {return_code}")
+        finally:
+            if self.process.poll() is None:
+                self.process.terminate()
+                self.process.wait(timeout=5.0)
+
+
+class NativeWristTeleopLoop:
+    """Run the same automatic-zero wrist adapter used by formal collection."""
+
+    def __init__(self, hardware: dict[str, Any]) -> None:
+        wrist = _section(hardware, "wrist_sensor")
+        self.controller = WristMasterSlaveController(
+            PROJECT_ROOT / str(wrist["config"]),
+            teleop_port=str(wrist.get("teleop_port", "auto")),
+            openrb_port=str(wrist.get("openrb_port", "auto")),
+            baud=int(wrist.get("baud", 115200)),
+        )
+
+    def run(self, stop_event: threading.Event) -> None:
+        with self.controller:
+            while not stop_event.wait(0.05):
+                self.controller.check()
 
 
 class RealPolicyBridge:
@@ -347,7 +493,9 @@ class RealPolicyBridge:
             twist = np.asarray(components["ur5"]["target_tcp_speed"], dtype=float).copy()
             hand = components["wuji"]["command_q"]
         except KeyError as exc:
-            raise ValueError(f"real policy schema lacks required hardware component: {exc}") from exc
+            raise ValueError(
+                f"real policy schema lacks required hardware component: {exc}"
+            ) from exc
         for values, limit in (
             (twist[:3], self.session.speed_settings.translation),
             (twist[3:], self.session.speed_settings.rotation),
@@ -384,17 +532,32 @@ def _apply_legacy_ur5_command(
     *,
     home_requested: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    state = session.read_ur5_state()
+    wrist_pressed = bool(buttons.get(int(Button.ONE), False) or buttons.get(int(Button.TWO), False))
+    home_pressed = bool(buttons.get(int(Button.HOME), False) or home_requested)
+    cap_active = bool(np.any(np.abs(motion) > 0.0))
+    # Reading UR feedback is an IPC + RTDE round trip.  It is required for
+    # workspace/home safety, but not for ordinary unconstrained SpaceMouse
+    # velocity streaming.  Reuse the last sample on the fast path.
+    needs_feedback = (
+        start_pose is None
+        or wrist_pressed
+        or (home_pressed and not cap_active)
+        or float(getattr(session, "max_offset_m", 0.0)) > 0.0
+        or float(getattr(session, "max_rotation_rad", 0.0)) > 0.0
+    )
+    if needs_feedback:
+        state = session.read_ur5_state()
+        session._last_ur5_state = state
+    else:
+        state = getattr(
+            session,
+            "_last_ur5_state",
+            {"tcp_pose": np.zeros(6), "joints": np.zeros(6)},
+        )
     current_pose = np.asarray(state["tcp_pose"], dtype=float)
     current_joints = np.asarray(state["joints"], dtype=float)
     if start_pose is None:
         start_pose = current_pose.copy()
-    cap_active = bool(np.any(np.abs(motion) > 0.0))
-    wrist_pressed = bool(
-        buttons.get(int(Button.ONE), False)
-        or buttons.get(int(Button.TWO), False)
-    )
-    home_pressed = bool(buttons.get(int(Button.HOME), False) or home_requested)
     twist = np.zeros(6, dtype=np.float64)
     target_qd = np.zeros(6, dtype=np.float64)
     if wrist_pressed:
@@ -522,7 +685,11 @@ class WujiRetargetTargetProvider:
             raise
 
     def _rpc(self, request: dict[str, Any]) -> Any:
-        if self._process.poll() is not None or self._process.stdin is None or self._process.stdout is None:
+        if (
+            self._process.poll() is not None
+            or self._process.stdin is None
+            or self._process.stdout is None
+        ):
             raise RuntimeError("Wuji retarget worker is not running")
         self._process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
         self._process.stdin.flush()
@@ -598,9 +765,10 @@ class WujiTargetController:
     def _stable_target(self, target: np.ndarray) -> np.ndarray | None:
         if self._armed:
             return target
-        if self._previous_target is not None and float(
-            np.max(np.abs(target - self._previous_target))
-        ) <= 0.35:
+        if (
+            self._previous_target is not None
+            and float(np.max(np.abs(target - self._previous_target))) <= 0.35
+        ):
             self._stable_frames += 1
         else:
             self._stable_frames = 1
@@ -612,9 +780,7 @@ class WujiTargetController:
 
     def update(self, buttons: dict[int, bool] | None = None) -> None:
         now = time.monotonic()
-        if buttons is not None and self.manual.update(
-            buttons, now, hold_when_inactive=False
-        ):
+        if buttons is not None and self.manual.update(buttons, now, hold_when_inactive=False):
             self.session.check()
             return
         target = self.provider.target(now)
@@ -751,9 +917,7 @@ class ControlledSpaceMouse:
                 self.latest_ur5_joints = np.asarray(current_joints, dtype=np.float64)
             self._first_ur_command.set()
             elapsed = time.monotonic() - started
-            self._control_stop.wait(
-                max(0.0, self.session.control_period_s - elapsed)
-            )
+            self._control_stop.wait(max(0.0, self.session.control_period_s - elapsed))
 
     def _run_wuji_control(self) -> None:
         assert self._hand_controller is not None
@@ -796,23 +960,14 @@ class ControlledSpaceMouse:
     def home_status(self) -> dict[str, object]:
         with self._latest_lock:
             ur5 = None if self.latest_ur5_joints is None else self.latest_ur5_joints.copy()
-            wuji = (
-                None
-                if self.latest_wuji_positions is None
-                else self.latest_wuji_positions.copy()
-            )
+            wuji = None if self.latest_wuji_positions is None else self.latest_wuji_positions.copy()
         if ur5 is None or wuji is None or self._hand_controller is None:
             self._home_stable_since = None
             return {"at_home": False, "detail": "等待零位遥测"}
         ur5_error = float(np.max(np.abs(ur5 - self.session.ur5_home_joints)))
         wuji_error = float(np.max(np.abs(wuji - self.session.wuji_home_joints)))
         command_error = float(
-            np.max(
-                np.abs(
-                    self._hand_controller.trajectory.command
-                    - self.session.wuji_home_joints
-                )
-            )
+            np.max(np.abs(self._hand_controller.trajectory.command - self.session.wuji_home_joints))
         )
         wrist_status = (
             self.session.wrist.home_status()
@@ -831,9 +986,7 @@ class ControlledSpaceMouse:
         elif self._home_stable_since is None:
             self._home_stable_since = now
         at_home = bool(
-            within
-            and self._home_stable_since is not None
-            and now - self._home_stable_since >= 0.30
+            within and self._home_stable_since is not None and now - self._home_stable_since >= 0.30
         )
         return {
             "at_home": at_home,
@@ -863,6 +1016,135 @@ class ControlledSpaceMouse:
             raise RuntimeError(f"collection control threads did not stop: {', '.join(alive)}")
         if self._control_failure is not None and not context_failed:
             self._raise_control_failure()
+
+
+class ControlledUR5SpaceMouse:
+    """Drive UR5 while supervising the independently sampled two-axis wrist."""
+
+    def __init__(
+        self,
+        mouse: SpaceMouseProcess,
+        session: UR5OnlySession,
+        wrist: WristMasterSlaveController,
+    ) -> None:
+        self.mouse, self.session, self.wrist = mouse, session, wrist
+        self.latest = (np.zeros(6, dtype=np.float32), {})
+        self.latest_twist = np.zeros(6, dtype=np.float64)
+        self.latest_target_qd = np.zeros(6, dtype=np.float64)
+        self.latest_ur5_joints: np.ndarray | None = None
+        self._latest_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._first_command = threading.Event()
+        self._home_requested = threading.Event()
+        self._home_stable_since: float | None = None
+        self._failure: BaseException | None = None
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self):
+        self.mouse.start()
+        return self
+
+    def state(self):
+        if not self.session.supervisor.armed:
+            self.session.supervisor.call_with_peer_heartbeats(
+                "ur5", self.session.ur5.prepare_control
+            )
+            self.session.supervisor.arm()
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run_guarded, name="collection-ur5-control")
+            self._thread.start()
+            if not self._first_command.wait(timeout=1.0):
+                self._raise_failure("UR5 control loop did not produce its first command")
+        self._raise_failure()
+        self.wrist.check()
+        with self._latest_lock:
+            return self.latest[0].copy(), self.latest[1].copy()
+
+    def _run_guarded(self) -> None:
+        try:
+            self._run()
+        except BaseException as exc:  # noqa: BLE001 - transfer control failure
+            self._failure = exc
+            self._stop.set()
+            with suppress(OSError, RuntimeError):
+                self.session.stop_ur5_motion()
+
+    def _run(self) -> None:
+        start_pose: np.ndarray | None = None
+        while not self._stop.is_set():
+            started = time.monotonic()
+            self.wrist.check()
+            motion, buttons = self.mouse.state()
+            with self._latest_lock:
+                self.latest = (motion.copy(), buttons.copy())
+            start_pose, twist, target_qd, joints = _apply_legacy_ur5_command(
+                self.session,
+                motion,
+                buttons,
+                start_pose,
+                home_requested=self._home_requested.is_set(),
+            )
+            with self._latest_lock:
+                self.latest_twist = np.asarray(twist, dtype=np.float64)
+                self.latest_target_qd = np.asarray(target_qd, dtype=np.float64)
+                self.latest_ur5_joints = np.asarray(joints, dtype=np.float64)
+            self._first_command.set()
+            self._stop.wait(max(0.0, self.session.control_period_s - (time.monotonic() - started)))
+
+    def _raise_failure(self, fallback: str | None = None) -> None:
+        if self._failure is not None:
+            raise RuntimeError(
+                f"collection control loop failed: {self._failure}"
+            ) from self._failure
+        if fallback is not None:
+            raise RuntimeError(fallback)
+
+    def request_home(self) -> None:
+        self._home_stable_since = None
+        self._home_requested.set()
+        self.wrist.request_home()
+
+    def clear_home(self) -> None:
+        self._home_requested.clear()
+
+    def home_status(self) -> dict[str, object]:
+        with self._latest_lock:
+            joints = None if self.latest_ur5_joints is None else self.latest_ur5_joints.copy()
+        if joints is None:
+            self._home_stable_since = None
+            return {"at_home": False, "detail": "waiting for UR5 telemetry"}
+        ur5_error = float(np.max(np.abs(joints - self.session.ur5_home_joints)))
+        wrist_status = self.wrist.home_status()
+        within = ur5_error <= 0.010 and bool(wrist_status["at_home"])
+        now = time.monotonic()
+        if not within:
+            self._home_stable_since = None
+        elif self._home_stable_since is None:
+            self._home_stable_since = now
+        at_home = bool(
+            within and self._home_stable_since is not None and now - self._home_stable_since >= 0.30
+        )
+        return {
+            "at_home": at_home,
+            "detail": f"UR5 error {ur5_error:.3f} rad; {wrist_status['detail']}",
+            "ur5_error_rad": ur5_error,
+            "wrist": wrist_status,
+        }
+
+    def __exit__(self, *_args: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        alive = self._thread is not None and self._thread.is_alive()
+        try:
+            self.session.stop_ur5_motion()
+        finally:
+            self.mouse.stop()
+        context_failed = bool(_args and _args[0] is not None)
+        if alive and not context_failed:
+            raise RuntimeError("collection UR5 control thread did not stop")
+        if self._failure is not None and not context_failed:
+            self._raise_failure()
 
 
 class CachedSpaceMouse:
@@ -923,8 +1205,9 @@ class StationSynchronizer:
         now = time.monotonic()
         frames = self.sources["cameras"].read(timeout_s)
         state = self.sources["ur5"].read_ur5_state()
-        hand = self.sources["wuji"].read_wuji_positions()
-        temperature = self.sources["wuji"].read_wuji_temperature()
+        wuji_source = self.sources.get("wuji")
+        hand = wuji_source.read_wuji_positions() if wuji_source is not None else None
+        temperature = wuji_source.read_wuji_temperature() if wuji_source is not None else None
         wrist_source = self.sources.get("wrist")
         wrist_state = wrist_source.state() if wrist_source is not None else None
         controlled_mouse = self.sources["spacemouse"]
@@ -937,23 +1220,34 @@ class StationSynchronizer:
             target_qd=np.asarray(controlled_mouse.latest_target_qd, dtype=np.float32),
             target_tcp_speed=np.asarray(controlled_mouse.latest_twist, dtype=np.float32),
         )
-        wuji = SimpleNamespace(
-            actual_q=np.asarray(hand, dtype=np.float32),
-            command_q=np.asarray(controlled_mouse.latest_hand_command, dtype=np.float32),
-            temperature=temperature,
+        wuji = (
+            SimpleNamespace(
+                actual_q=np.asarray(hand, dtype=np.float32),
+                command_q=np.asarray(controlled_mouse.latest_hand_command, dtype=np.float32),
+                temperature=temperature,
+            )
+            if hand is not None
+            else None
         )
-        wrist = SimpleNamespace(
-            actual_q=np.asarray(
-                [np.deg2rad(float(wrist_state.fe_deg)), np.deg2rad(float(wrist_state.ru_deg))]
-                if wrist_state is not None else [0.0, 0.0],
-                dtype=np.float32,
-            ),
-            target_q=np.asarray(
-                [np.deg2rad(float(wrist_state.target_fe_deg)), np.deg2rad(float(wrist_state.target_ru_deg))]
-                if wrist_state is not None else [0.0, 0.0],
-                dtype=np.float32,
-            ),
-        )
+        if wrist_state is None:
+            wrist = None
+        elif hasattr(wrist_state, "actual_q"):
+            wrist = SimpleNamespace(
+                actual_q=np.asarray(wrist_state.actual_q, dtype=np.float32),
+                target_q=np.asarray(wrist_state.target_q, dtype=np.float32),
+            )
+        else:
+            wrist = SimpleNamespace(
+                actual_q=np.deg2rad(
+                    np.asarray([wrist_state.fe_deg, wrist_state.ru_deg], dtype=np.float32)
+                ),
+                target_q=np.deg2rad(
+                    np.asarray(
+                        [wrist_state.target_fe_deg, wrist_state.target_ru_deg],
+                        dtype=np.float32,
+                    )
+                ),
+            )
         mouse = SimpleNamespace(
             axes=np.asarray(motion, dtype=np.float32),
             buttons=np.asarray([bool(buttons.get(int(code), False)) for code in RECORDED_BUTTONS]),
@@ -983,42 +1277,85 @@ class StationSynchronizer:
             for camera in enabled_cameras(schema)
         }
         command_name = str(schema["synchronization"]["command_channel"]["name"])
-        return SynchronizedInputs(
-            cameras=cameras,
-            channels={"ur5": sample(ur), "wuji": sample(wuji), "wrist": sample(wrist), command_name: sample(mouse)},
-        )
+        channels = {"ur5": sample(ur), command_name: sample(mouse)}
+        if wuji is not None:
+            channels["wuji"] = sample(wuji)
+        if wrist is not None:
+            wrist_timestamp = float(getattr(wrist_state, "host_timestamp_s", now))
+            wrist_sequence = int(getattr(wrist_state, "sequence", self.sequence))
+            channels["wrist"] = sample(
+                wrist,
+                wrist_timestamp,
+                wrist_timestamp,
+                wrist_sequence,
+            )
+        return SynchronizedInputs(cameras=cameras, channels=channels)
 
 
-def _preflight(hardware: dict[str, Any]) -> None:
-    for section_name in ("ur5", "wujihand"):
+def _driver_python_preflight(hardware: dict[str, Any], *sections: str) -> None:
+    for section_name in sections:
         python = Path(str(_section(hardware, section_name).get("driver_python", "")))
         if not python.is_file():
             raise FileNotFoundError(f"{section_name} driver Python is missing: {python}")
 
 
+def _preflight(hardware: dict[str, Any]) -> None:
+    _driver_python_preflight(hardware, "ur5", "wujihand")
+
+
+def _wrist_teleop_preflight(hardware: dict[str, Any]) -> None:
+    _driver_python_preflight(hardware, "ur5")
+    wrist = _section(hardware, "wrist_sensor")
+    config = PROJECT_ROOT / str(wrist.get("config", ""))
+    if not config.is_file():
+        raise FileNotFoundError(f"wrist_sensor.config is missing: {config}")
+
+
 def _collection_preflight(hardware: dict[str, Any]) -> None:
     _preflight(hardware)
     if importlib.util.find_spec("lerobot") is None:
-        raise RuntimeError(
-            "LeRobot v3 is not installed in the collection Python environment"
-        )
+        raise RuntimeError("LeRobot v3 is not installed in the collection Python environment")
+
+
+def _wrist_collection_preflight(hardware: dict[str, Any]) -> None:
+    _wrist_teleop_preflight(hardware)
+    if importlib.util.find_spec("lerobot") is None:
+        raise RuntimeError("LeRobot v3 is not installed in the collection Python environment")
 
 
 def _mouse(_hardware: dict[str, Any], session: StationSession) -> SpaceMouseProcess:
     return SpaceMouseProcess(
         deadzone=session.spacemouse_deadzone,
-        stale_timeout=0.1,
-        rate_hz=1.0 / session.control_period_s,
+        stale_timeout=0.05,
+        rate_hz=max(250.0, 1.0 / session.control_period_s),
     )
 
 
 def make_teleop(hardware: dict[str, Any], task: dict[str, Any]) -> TeleopDependencies:
+    wuji_enabled = bool(_section(hardware, "wujihand").get("enabled", False))
+    wrist_enabled = bool(_section(hardware, "wrist_sensor").get("enabled", False))
+    if wrist_enabled and not wuji_enabled:
+        session = UR5OnlySession(hardware, task)
+        unavailable = lambda *_args: None
+        return TeleopDependencies(
+            ur5_factory=lambda _config, mouse, _stop: UR5TeleopLoop(session, mouse),
+            wuji_factory=unavailable,
+            spacemouse_factory=lambda config: CachedSpaceMouse(
+                _mouse(config, session), session.control_period_s
+            ),
+            preflight=_wrist_teleop_preflight,
+            runtime_factories={
+                "ur5-teleop": lambda _config, mouse, _stop: UR5TeleopLoop(session, mouse),
+                "wrist-teleop": lambda config, _mouse, _stop: NativeWristTeleopLoop(config),
+            },
+            required_devices=("ur5", "wrist_sensor", "spacemouse"),
+        )
+    if not wuji_enabled:
+        raise ValueError("real teleop requires either wujihand or wrist_sensor")
     session = StationSession(hardware, task)
     return TeleopDependencies(
         ur5_factory=lambda _config, mouse, _stop: UR5TeleopLoop(session, mouse),
-        wuji_factory=lambda _config, mouse, _stop: WujiSupervisionLoop(
-            session, hardware, mouse
-        ),
+        wuji_factory=lambda _config, mouse, _stop: WujiSupervisionLoop(session, hardware, mouse),
         spacemouse_factory=lambda config: CachedSpaceMouse(
             _mouse(config, session), session.control_period_s
         ),
@@ -1057,9 +1394,7 @@ def _cameras(hardware: dict[str, Any]):
     return opened()
 
 
-def _dataset(
-    config: dict[str, Any], task: dict[str, Any], input_schema: str | Path | None = None
-):
+def _dataset(config: dict[str, Any], task: dict[str, Any], input_schema: str | Path | None = None):
     if importlib.util.find_spec("lerobot") is None:
         raise RuntimeError("LeRobot v3 is not installed in the collection Python environment")
     root = Path(str(config.get("root", "data/lerobot")))
@@ -1072,20 +1407,78 @@ def _dataset(
     )
 
 
+def _configured_dataset(
+    config: dict[str, Any],
+    task: dict[str, Any],
+    contract: ConfiguredDatasetContract,
+):
+    if importlib.util.find_spec("lerobot") is None:
+        raise RuntimeError("LeRobot v3 is not installed in the collection Python environment")
+    root = Path(str(config.get("root", "data/lerobot")))
+    task_id = str(task.get("task", {}).get("id", "real"))
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    output = root / f"{task_id}-wrist8d-{stamp}"
+    return create_configured_dataset(
+        repo_id=f"local/{task_id}-wrist8d-{stamp}",
+        root=output,
+        contract=contract,
+    )
+
+
 def make_collection(
     hardware: dict[str, Any], dataset: dict[str, Any], task: dict[str, Any]
 ) -> CollectionDependencies:
+    wuji_enabled = bool(_section(hardware, "wujihand").get("enabled", False))
+    wrist_enabled = bool(_section(hardware, "wrist_sensor").get("enabled", False))
+    if wrist_enabled and not wuji_enabled:
+        session = UR5OnlySession(hardware, task)
+        wrist_config = _section(hardware, "wrist_sensor")
+        wrist = WristMasterSlaveController(
+            PROJECT_ROOT / str(wrist_config["config"]),
+            teleop_port=str(wrist_config.get("teleop_port", "auto")),
+            openrb_port=str(wrist_config.get("openrb_port", "auto")),
+            baud=int(wrist_config.get("baud", 115200)),
+        )
+        schema = load_input_schema(hardware.get("input_schema"))
+        contract = ConfiguredDatasetContract(schema)
+        assembler = partial(
+            assemble_configured_frame,
+            schema=schema,
+            validator=contract.validate_frame,
+        )
+        unavailable = lambda *_args: None
+        return CollectionDependencies(
+            ur5_factory=unavailable,
+            wuji_factory=unavailable,
+            spacemouse_factory=unavailable,
+            cameras_factory=unavailable,
+            dataset_factory=lambda config, selected_task: _configured_dataset(
+                config, selected_task, contract
+            ),
+            synchronizer_factory=lambda sources, _config: StationSynchronizer(
+                {**sources, "input_schema": hardware.get("input_schema")}
+            ),
+            recorder_factory=lambda data, sync, prompt: EpisodeRecorder(
+                data, sync, prompt, assembler=assembler
+            ),
+            preflight=_wrist_collection_preflight,
+            resource_factories={
+                "ur5": lambda _config: session.lease(arm=False),
+                "wrist": lambda _config: wrist,
+                "spacemouse": lambda config: ControlledUR5SpaceMouse(
+                    _mouse(config, session), session, wrist
+                ),
+                "cameras": _cameras,
+            },
+            required_devices=("ur5", "wrist_sensor", "spacemouse", "cameras"),
+        )
     session = StationSession(hardware, task)
     return CollectionDependencies(
         ur5_factory=lambda _config: session.lease(arm=False),
         wuji_factory=lambda _config: session.lease(arm=False),
-        spacemouse_factory=lambda _config: ControlledSpaceMouse(
-            _mouse(_config, session), session
-        ),
+        spacemouse_factory=lambda _config: ControlledSpaceMouse(_mouse(_config, session), session),
         cameras_factory=_cameras,
-        dataset_factory=lambda config, task: _dataset(
-            config, task, hardware.get("input_schema")
-        ),
+        dataset_factory=lambda config, task: _dataset(config, task, hardware.get("input_schema")),
         synchronizer_factory=lambda sources, _config: StationSynchronizer(
             {**sources, "input_schema": hardware.get("input_schema")}
         ),

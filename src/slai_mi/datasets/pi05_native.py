@@ -41,6 +41,8 @@ def build_native_v21(
     schema = load_input_schema(schema_path)
     cameras = enabled_cameras(schema)
     policy = schema["pi05"]
+    capture_channels = {str(item["channel"]) for item in schema["capture"]["state"]["components"]}
+    robot_type = "ur5_wrist_pi05" if capture_channels == {"ur5", "wrist"} else "ur5_wujihand_pi05"
     state_size = int(policy["state"]["model_pad_to"])
     action_size = int(policy["action"]["model_pad_to"])
     image = {
@@ -62,7 +64,7 @@ def build_native_v21(
     target_ds = LeRobotDataset.create(
         repo_id=target_repo_id,
         root=target,
-        robot_type="ur5_wujihand_pi05",
+        robot_type=robot_type,
         fps=int(source_ds.fps),
         features=features,
         use_videos=True,
@@ -97,9 +99,7 @@ def build_native_v21(
     return target
 
 
-def upgrade_native_v21_to_v30(
-    source: Path, target: Path, *, repo_id: str
-) -> Path:
+def upgrade_native_v21_to_v30(source: Path, target: Path, *, repo_id: str) -> Path:
     """Run LeRobot's official in-place converter on an isolated copy."""
     from lerobot.scripts.convert_dataset_v21_to_v30 import convert_dataset
 
@@ -137,7 +137,10 @@ def add_training_quantiles(root: Path, *, repo_id: str, batch_size: int = 4096) 
         column = dataset.hf_dataset[key]
         for start in range(0, len(column), batch_size):
             batch = np.stack(
-                [np.asarray(value, dtype=np.float32) for value in column[start : start + batch_size]]
+                [
+                    np.asarray(value, dtype=np.float32)
+                    for value in column[start : start + batch_size]
+                ]
             )
             running.update(batch)
         if len(column) == 1:

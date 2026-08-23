@@ -58,14 +58,16 @@ def _settings(config: dict) -> dict:
     }
 
 
-def _latest_source() -> Path:
+def _latest_source(schema_path: str | Path | None = None) -> Path:
     from slai_mi.datasets.pi05 import validate_pi05_source
+    from slai_mi.input_schema import load_input_schema
 
+    schema = load_input_schema(project_path(schema_path)) if schema_path else None
     valid = []
     for info in project_path("data/lerobot").glob("*/meta/info.json"):
         root = info.parent.parent
         try:
-            validate_pi05_source(root)
+            validate_pi05_source(root, schema)
         except (OSError, TypeError, ValueError):
             continue
         valid.append(root)
@@ -76,7 +78,10 @@ def _latest_source() -> Path:
 
 def _all_config(config: dict, source: Path, run_id: str | None) -> tuple[dict, Path]:
     identifier = run_id or source.name
-    if not identifier or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-" for character in identifier):
+    if not identifier or any(
+        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
+        for character in identifier
+    ):
         raise ValueError("--run-id may contain only letters, digits, dot, dash, and underscore")
     dataset, policy, training = config["dataset"], config["policy"], config["training"]
     training_root = Path("data/training/pi05")
@@ -127,9 +132,25 @@ def main(argv: list[str] | None = None) -> int:
     try:
         loaded = load_yaml(args.config)
         if args.command == "all":
-            source = args.source.expanduser().resolve() if args.source else _latest_source()
+            source = (
+                args.source.expanduser().resolve()
+                if args.source
+                else _latest_source(loaded["dataset"]["input_schema"])
+            )
             loaded, generated = _all_config(loaded, source, args.run_id)
-            print(json.dumps({"app": "pi05", "command": "all", "source": str(source), "config": str(generated), "smoke": args.smoke, "mode": "execute" if args.execute else "dry-run"}, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "app": "pi05",
+                        "command": "all",
+                        "source": str(source),
+                        "config": str(generated),
+                        "smoke": args.smoke,
+                        "mode": "execute" if args.execute else "dry-run",
+                    },
+                    indent=2,
+                )
+            )
             if not args.execute:
                 return 0
             if generated.exists():
@@ -137,7 +158,15 @@ def main(argv: list[str] | None = None) -> int:
             generated.parent.mkdir(parents=True, exist_ok=True)
             generated.write_text(yaml.safe_dump(loaded, sort_keys=False), encoding="utf-8")
             for command in ("convert", "norm", "config", "train"):
-                child = [sys.executable, "-m", "slai_mi.apps.pi05", command, "--config", str(generated), "--execute"]
+                child = [
+                    sys.executable,
+                    "-m",
+                    "slai_mi.apps.pi05",
+                    command,
+                    "--config",
+                    str(generated),
+                    "--execute",
+                ]
                 if args.smoke and command in {"config", "train"}:
                     child.append("--smoke")
                 subprocess.run(child, check=True)
@@ -157,8 +186,18 @@ def main(argv: list[str] | None = None) -> int:
                 "model_python": str(settings["v3_python"]),
                 "device": "cuda",
                 "input_schema": str(settings["input_schema"]),
-                "dataset": {"repo_id": settings["native_repo_id"], "root": str(settings["native_v30"]), "physical_v21_root": str(settings["converted"]), "video_backend": "pyav", "frame_index": 0},
-                "deployment": {"task_prompt": loaded["policy"]["task_prompt"], "max_steps": 0, "inference_timeout_s": 5.0},
+                "dataset": {
+                    "repo_id": settings["native_repo_id"],
+                    "root": str(settings["native_v30"]),
+                    "physical_v21_root": str(settings["converted"]),
+                    "video_backend": "pyav",
+                    "frame_index": 0,
+                },
+                "deployment": {
+                    "task_prompt": loaded["policy"]["task_prompt"],
+                    "max_steps": 0,
+                    "inference_timeout_s": 5.0,
+                },
             }
             inference_path = generated.with_name("inference.yaml")
             inference_path.write_text(yaml.safe_dump(inference, sort_keys=False), encoding="utf-8")
@@ -292,7 +331,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             raise ValueError(f"unsupported PI0.5 training backend: {settings['backend']}")
         return 0
-    except (ImportError, KeyError, OSError, RuntimeError, subprocess.SubprocessError, TypeError, ValueError) as exc:
+    except (
+        ImportError,
+        KeyError,
+        OSError,
+        RuntimeError,
+        subprocess.SubprocessError,
+        TypeError,
+        ValueError,
+    ) as exc:
         raise SystemExit(f"PI0.5 {args.command} failed: {exc}") from exc
 
 

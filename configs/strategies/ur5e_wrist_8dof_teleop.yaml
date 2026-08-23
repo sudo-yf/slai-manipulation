@@ -1,0 +1,16 @@
+schema_version: 1
+strategy:
+  id: ur5e_wrist_8dof_teleop
+  label: SpaceMouse UR5e + ESP32/OpenRB 腕部 8DoF 遥操作
+  status: ready
+  supported_apps: [teleop_real]
+  required_hardware: [ur5, wrist_sensor, spacemouse]
+  disabled_hardware: [wujihand]
+  inputs: [spacemouse, wrist_master_esp32, collection_cameras]
+  outputs: [ur5e, wrist_slave_openrb]
+  control:
+    ur5e: spacemouse_twist
+    wrist: wrist_master_to_slave
+  physical_dof: 8
+dataset:
+  note: 当前是联合遥操作组；腕部供应商程序可记录腕部 episode，但尚未生成统一 UR5e+腕部 dataset。

@@ -70,6 +70,57 @@ def test_teleop_supervises_workers_and_closes_input() -> None:
     assert events[-1] == "mouse-close"
 
 
+def test_teleop_runs_only_named_strategy_workers() -> None:
+    events: list[str] = []
+
+    @contextmanager
+    def mouse_factory(_config):
+        events.append("mouse-open")
+        try:
+            yield object()
+        finally:
+            events.append("mouse-close")
+
+    class Runtime:
+        def __init__(self, name: str, *, finish: bool = False) -> None:
+            self.name = name
+            self.finish = finish
+
+        def run(self, stop: threading.Event) -> None:
+            events.append(f"{self.name}-run")
+            if self.finish:
+                return
+            stop.wait(1.0)
+            events.append(f"{self.name}-stop")
+
+    def forbidden(*_args):
+        raise AssertionError("legacy factory must not be used")
+
+    dependencies = TeleopDependencies(
+        ur5_factory=forbidden,
+        wuji_factory=forbidden,
+        spacemouse_factory=mouse_factory,
+        runtime_factories={
+            "ur5-teleop": lambda *_args: Runtime("ur5"),
+            "wrist-teleop": lambda *_args: Runtime("wrist", finish=True),
+        },
+        required_devices=("ur5", "wrist_sensor", "spacemouse"),
+    )
+    config = {
+        "configured": True,
+        "ur5": {"enabled": True, "host": "robot.invalid"},
+        "wrist_sensor": {"enabled": True},
+        "spacemouse": {"enabled": True},
+    }
+
+    RealTeleopWorkflow(config, dependencies).run()
+
+    assert "ur5-run" in events
+    assert "wrist-run" in events
+    assert "ur5-stop" in events
+    assert events[-1] == "mouse-close"
+
+
 def test_collection_saves_episode_and_finalizes_all_resources() -> None:
     events: list[str] = []
 
@@ -138,6 +189,75 @@ def test_collection_saves_episode_and_finalizes_all_resources() -> None:
         "ur5-close",
     ]
     assert events[-1] == "ur5-close"
+
+
+def test_collection_named_resources_exclude_wuji() -> None:
+    events: list[str] = []
+
+    class Mouse:
+        def __init__(self):
+            self.states = [{0: True}, {0: False}, {1: True}]
+
+        def state(self):
+            return (), self.states.pop(0)
+
+    @contextmanager
+    def opened(name, value=None):
+        events.append(f"{name}-open")
+        try:
+            yield value if value is not None else object()
+        finally:
+            events.append(f"{name}-close")
+
+    class Dataset:
+        def save_episode(self):
+            events.append("save")
+
+        def clear_episode_buffer(self):
+            pass
+
+        def finalize(self):
+            events.append("finalize")
+
+    class Recorder:
+        frame_count = 1
+
+        def record(self, stop):
+            stop.wait()
+
+    forbidden = lambda *_args: (_ for _ in ()).throw(AssertionError("legacy factory used"))
+    mouse = Mouse()
+    dependencies = CollectionDependencies(
+        ur5_factory=forbidden,
+        wuji_factory=forbidden,
+        spacemouse_factory=forbidden,
+        cameras_factory=forbidden,
+        dataset_factory=lambda *_args: Dataset(),
+        synchronizer_factory=lambda *_args: object(),
+        recorder_factory=lambda *_args: Recorder(),
+        sleep=lambda _seconds: None,
+        resource_factories={
+            "ur5": lambda _config: opened("ur5"),
+            "wrist": lambda _config: opened("wrist"),
+            "spacemouse": lambda _config: opened("mouse", mouse),
+            "cameras": lambda _config: opened("cameras"),
+        },
+        required_devices=("ur5", "wrist_sensor", "spacemouse", "cameras"),
+    )
+    config = hardware_config()
+    config["wujihand"]["enabled"] = False
+    config["wrist_sensor"] = {"enabled": True}
+    workflow = RealCollectionWorkflow(
+        config,
+        {},
+        {"task": {"instruction": "task"}},
+        dependencies,
+        episode_limit=1,
+    )
+
+    assert workflow.run() == 1
+    assert "wrist-open" in events
+    assert not any(event.startswith("wuji-") for event in events)
 
 
 def test_collection_rejects_missing_camera_identity_before_opening() -> None:

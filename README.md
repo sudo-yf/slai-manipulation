@@ -6,7 +6,7 @@ UR5 + WujiHand 操作智能项目：真机/仿真遥操作、LeRobot 数据采�
 
 ## 0. 超短快捷命令（完整清单）
 
-下面是 `shell/slai-shortcuts.sh` 当前定义的全部 27 个公开快捷命令。所有运行类命令都能从任意目录调用，并会先自动进入 `/home/user/shiyi/slai-manipulation`；`s` 会让当前终端直接进入该目录。
+下面是 `shell/slai-shortcuts.sh` 当前定义的全部公开快捷命令。所有运行类命令都能从任意目录调用，并会先自动进入 `/home/user/shiyi/slai-manipulation`；`s` 会让当前终端直接进入该目录。
 
 新终端自动生效。脚本更新后，已经打开的终端必须执行一次：
 
@@ -23,6 +23,8 @@ source ~/.bash_aliases
 | `simx` | 启动仿真遥操作 | `uv run` 项目环境 | 否 |
 | `sc` | 用 LeRobot v3 环境显示真机采集计划 | `.venv-lerobot-v3` | 否 |
 | `scx` | 正式连续采集；采多少段由你决定，LOCK 或 `Ctrl-C` 才结束 | `.venv-lerobot-v3` | **是** |
+| `scw` | 显示 UR5e + 双轴腕部 8DoF 采集计划 | `.venv-lerobot-v3` | 否 |
+| `scwx` | 正式进行 UR5e + 双轴腕部 8DoF 采集 | `.venv-lerobot-v3` | **是** |
 | `scc` | `scx` 的兼容连续采集命令 | `.venv-lerobot-v3` | **是** |
 | `scs` | 显示仿真采集计划 | `uv run` 项目环境 | 否 |
 | `scsx` | 启动仿真采集 | `uv run` 项目环境 | 否 |
@@ -62,6 +64,54 @@ si --config outputs/pi05/r11/inference.yaml --execute
 sd --config outputs/pi05/r11/inference.yaml
 sv tests/test_apps_entrypoints.py
 sl
+```
+
+当前真机工作方式通过策略组选择。下面的命令只查看配置，不连接设备：
+
+```bash
+uv run slai-strategies
+uv run slai-strategies ur5e_wujihand_26dof_collection
+```
+
+已有四个组：
+
+- `ur5e_wujihand_26dof_collection`：现有正式数采；真实 26DoF，文件为兼容旧训练链路仍含两个腕部零值。
+- `ur5e_wujihand_retargeting`：SpaceMouse 控制 UR5e，4K 相机 retargeting 控制 WujiHand。
+- `ur5e_wrist_8dof_teleop`：SpaceMouse 控制 UR5e，ESP32 主腕控制 OpenRB 从腕；不启动 WujiHand。
+- `ur5e_wrist_8dof_collection`：同一组控制加三路 RGB 采集；state/action 都是实际 8DoF，不含 WujiHand 和补零腕部。
+
+`slai-collect-real` 默认选择第一组，`slai-teleop-real` 和 `slai-record-pose` 默认选择第二组。也可以显式传入 `--strategy STRATEGY_ID`。腕部组合的只读计划和执行命令为：
+
+```bash
+uv run slai-teleop-real --strategy ur5e_wrist_8dof_teleop
+uv run slai-teleop-real --strategy ur5e_wrist_8dof_teleop \
+  --execute-real --confirm I_UNDERSTAND_REAL_ROBOT_MOTION
+```
+
+腕部组合运行时，WujiHand 和采集相机被显式关闭。供应商目录 `third_party/02_Python_Client_CLI` 只读使用，腕部临时 episode 写入主项目的 `data/wrist-teleop`。
+
+腕部正式采集使用：
+
+```bash
+scw                  # 只显示计划，不连接设备
+scwx --episodes 1    # 采一段并退出
+scwx                 # 连续采集，LOCK 或 Ctrl-C 结束
+```
+
+`scwx` 会先暂停独立的 `record.leai.me` 相机服务，让采集进程独占三台 RealSense 和 8765 监控端口；采集退出后自动恢复网页服务。同一路由器下始终使用 `http://192.168.1.102:8765/`，不需要开启代理。腕部主手在程序启动时自动建立当前零点，不需要再按 ESP32 的 START 按钮。数据保存为 8D state（UR5 关节 6 + 腕部 FE/RU 实测 2）和 8D action（UR5 TCP 速度 6 + 腕部目标 2），所有腕部角度在主项目数据边界均为弧度。
+
+采完一段后的 PI0.5 一步冒烟训练命令为：
+
+```bash
+sp all --config configs/pi05_wrist_8dof.yaml \
+  --source data/lerobot/实际数据集目录 \
+  --run-id wrist8d_acceptance --execute --smoke
+```
+
+正式训练前先运行统一数据验收：
+
+```bash
+se dataset data/lerobot/实际数据集目录
 ```
 
 `scx` 默认恢复旧版正式采集逻辑：启动后不限制 Episode 数量；Menu 开始一段；Fit 触发自动归零，但 Episode 在整个回零过程中继续录制，确认到达任务零位后才停止录制并保存，然后等待下一次 Menu；Esc 丢弃当前段并归零，归零后同样等待下一次 Menu，绝不主动开始录制；LOCK 或 `Ctrl-C` 才 finalize 数据集并退出。只有显式传入 `scx --episodes N` 时才会保存满 `N` 段后自动结束。归零失败，或归零期间按 LOCK/`Ctrl-C`，当前尚未提交的 Episode 不会保存。0 有效帧的 Episode 也按丢弃处理，归零后等待 Menu。
@@ -285,6 +335,16 @@ H100 调度节点上的前台启动脚本使用该平台固定路径，并支持
 NUM_GPUS=4 STEPS=30000 BATCH_SIZE=4 bash deploy/h100_train.sh
 NUM_GPUS=4 STEPS=30000 BATCH_SIZE=16 bash deploy/h100_train_jax.sh
 ```
+
+将 wrist 8DoF 数据同步到在线 H100、检出干净代码 worktree，并在后台依次执行转换、
+norm stats 和 JAX PI0.5 训练：
+
+```bash
+bash deploy/h100_wrist8d_pipeline.sh
+```
+
+可通过 `H100_HOST`、`REMOTE_PROJECT`、`NUM_GPUS`、`STEPS` 和 `BATCH_SIZE` 覆盖默认值。
+脚本不会修改 H100 上保留有现场改动的原工作目录。
 
 推理：
 

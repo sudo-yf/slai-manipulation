@@ -26,6 +26,7 @@ SUPPORTED_CONTRACTS = {
     "robot_teleoperation.ur5_wuji.pi05_cartesian.v1",
     "robot_teleoperation.ur5_wuji.three_rgb_cartesian.v3",
     "robot_teleoperation.ur5_wuji.three_rgb_cartesian_rot6d_columns.v5",
+    "robot_teleoperation.ur5_wrist.three_rgb_cartesian_rot6d_columns.v1",
 }
 
 
@@ -40,9 +41,7 @@ def discover_source_roots(source: Path) -> tuple[Path, ...]:
     return tuple(roots)
 
 
-def validate_pi05_source(
-    root: Path, schema: dict[str, Any] | None = None
-) -> dict[str, object]:
+def validate_pi05_source(root: Path, schema: dict[str, Any] | None = None) -> dict[str, object]:
     """Validate a PI0.5 source against the configured camera and vector schema."""
     info_path = root / "meta" / "info.json"
     contract_path = root / "meta" / "robot_teleoperation_contract.json"
@@ -63,7 +62,9 @@ def validate_pi05_source(
     image_shape = list(capture["image_shape"])
     for camera, key in cameras:
         if features[key].get("shape") != image_shape:
-            raise ValueError(f"{root}:{key} for camera {camera['role']} must have shape {image_shape}")
+            raise ValueError(
+                f"{root}:{key} for camera {camera['role']} must have shape {image_shape}"
+            )
     state_dim = 0
     for index, source in enumerate(policy["state"]["sources"]):
         key = source["key"]
@@ -135,8 +136,10 @@ def stage_episode(
         item = dataset[index]
         for camera in cameras:
             role = str(camera["role"])
-            key = camera_keys.get(role) if camera_keys else next(
-                (str(key) for key in camera["source_keys"] if key in item), None
+            key = (
+                camera_keys.get(role)
+                if camera_keys
+                else next((str(key) for key in camera["source_keys"] if key in item), None)
             )
             if key is None:
                 raise ValueError(f"configured camera {role} is absent from episode item")
@@ -148,7 +151,9 @@ def stage_episode(
             for source_index, source in enumerate(policy["state"]["sources"])
         ]
         states.append(np.concatenate(parts, dtype=np.float32))
-        actions.append(select_vector(item[policy["action"]["key"]], policy["action"], "pi05.action"))
+        actions.append(
+            select_vector(item[policy["action"]["key"]], policy["action"], "pi05.action")
+        )
         task = str(item["task"])
     if not states:
         raise ValueError("episode has no frames after PI0.5 sampling")
@@ -206,9 +211,7 @@ def convert_v3_to_v21(
                 raise ValueError(
                     f"configured source FPS {source_fps} differs from {root}: {dataset.fps}"
                 )
-            required = {
-                str(source["key"]) for source in schema["pi05"]["state"]["sources"]
-            }
+            required = {str(source["key"]) for source in schema["pi05"]["state"]["sources"]}
             required.add(str(schema["pi05"]["action"]["key"]))
             if missing := sorted(required - set(dataset.features)):
                 raise ValueError(f"{root} is missing features: " + ", ".join(missing))

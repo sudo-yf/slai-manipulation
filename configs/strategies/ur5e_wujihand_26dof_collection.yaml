@@ -1,0 +1,19 @@
+schema_version: 1
+strategy:
+  id: ur5e_wujihand_26dof_collection
+  label: UR5e + WujiHand 26DoF 正式数采
+  status: ready
+  supported_apps: [collect_real]
+  required_hardware: [ur5, wujihand, spacemouse, cameras]
+  disabled_hardware: [wrist_sensor]
+  inputs: [spacemouse, collection_cameras]
+  outputs: [ur5e, wujihand]
+  control:
+    ur5e: spacemouse_twist
+    wujihand: spacemouse_manual_presets
+  physical_dof: 26
+dataset:
+  state_schema: real_v1
+  recorded_dof: 28
+  synthetic_channels: [wrist_fe_ru_zero]
+  note: 当前文件格式为兼容 PI0.5 保留两个腕部零值；真实可运动和可测量自由度仍为 26。

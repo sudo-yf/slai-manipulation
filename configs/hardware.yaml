@@ -60,6 +60,7 @@ wrist_sensor:
   # OpenRB V2 controller and calibrated FE/RU zero are owned by the original
   # Wrist2Wrist project; scx only invokes that existing HOME path.
   openrb_port: auto
+  teleop_port: auto
   baud: 115200
   mode: hold
   config: third_party/02_Python_Client_CLI/closed_loop_record/wrist_output_v2.yaml

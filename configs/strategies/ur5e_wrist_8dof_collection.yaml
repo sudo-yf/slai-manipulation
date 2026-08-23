@@ -1,0 +1,18 @@
+schema_version: 1
+strategy:
+  id: ur5e_wrist_8dof_collection
+  label: SpaceMouse UR5e + ESP32/OpenRB wrist 8DoF collection
+  status: ready
+  supported_apps: [collect_real]
+  required_hardware: [ur5, wrist_sensor, spacemouse, cameras]
+  disabled_hardware: [wujihand]
+  inputs: [spacemouse, wrist_master_esp32, collection_cameras]
+  outputs: [ur5e, wrist_slave_openrb]
+  control:
+    ur5e: spacemouse_twist
+    wrist: wrist_master_to_slave_auto_zero
+  physical_dof: 8
+dataset:
+  recorded_dof: 8
+  input_schema: configs/input_schemas/ur5e_wrist_8dof.yaml
+  note: UR5 joints and measured wrist FE/RU are recorded in radians.
